@@ -16,3 +16,5 @@ pydantic==2.10.1
 
 loguru==0.7.2
 yacs==0.1.8
+
+xgboost==

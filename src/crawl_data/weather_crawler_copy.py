@@ -31,8 +31,8 @@ class WeatherCrawler:
         self.calls_in_current_minute = 0
         self.minute_start_time = datetime.now()
         self.data_dir = "data"
-        self.data_file = os.path.join(self.data_dir, "weather_data.json")
-        self.timestamp_file = os.path.join(self.data_dir, "last_timestamp.json")
+        self.data_file = os.path.join(self.data_dir, "weather_data1.json")
+        self.timestamp_file = os.path.join(self.data_dir, "last_timestamp1.json")
         self.session = None
         self._init_data_file()
         self._init_timestamp_file()
@@ -51,8 +51,8 @@ class WeatherCrawler:
         """Initialize timestamp file if it doesn't exist"""
         if not os.path.exists(self.timestamp_file):
             with open(self.timestamp_file, 'w') as f:
-                # Set initial timestamp to 2022-12-31 17:00:00
-                initial_date = datetime(2022, 12, 31, 17, 0, 0, tzinfo=timezone.utc)
+                # Set initial timestamp to 2020-12-31 17:00:00
+                initial_date = datetime(2020, 12, 31, 17, 0, 0, tzinfo=timezone.utc)
                 initial_timestamp = int(initial_date.timestamp())
                 json.dump({"last_timestamp": initial_timestamp}, f)
                 logger.info(f"Initialized timestamp file with date: {initial_date.strftime('%Y-%m-%d %H:%M:%S')}")
