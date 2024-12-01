@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 from contextlib import AsyncExitStack
 from sklearn.cluster import KMeans
@@ -73,6 +74,19 @@ app = FastAPI(
     description="Microservice for weather prediction using machine learning models.",
     version="1.0.0",
     lifespan=lifespan,  # Attach lifecycle manager
+)
+
+origins = [
+    "http://localhost:3000",  # Domain của frontend
+    # Thêm các domain khác nếu cần
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  # Chỉ định domain được phép
+    allow_credentials=True,
+    allow_methods=["*"],  # Cho phép tất cả các phương thức (GET, POST, ...)
+    allow_headers=["*"],  # Cho phép tất cả các headers
 )
 
 @app.get("/")
@@ -203,7 +217,7 @@ async def get_all_data_cluster():
         data_cluster_json = data_cluster.to_dict(orient="records")
         
         logger.info(f"Successfully retrieved {len(data_cluster)} cluster records.")
-        return {"status": "success", "data_cluster": data_cluster_json}
+        return {"data_cluster": data_cluster_json}
 
     except HTTPException as he:
         logger.error(f"HTTPException while fetching data cluster: {he.detail}")

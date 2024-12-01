@@ -89,6 +89,12 @@ class WeatherCluster:
                         raise HTTPException(status_code=204, detail="No content retrieved from API.")
                     df = pd.DataFrame(data)
                     logger.info(f"Retrieved {len(df)} cluster records.")
+                    columns = ['date', 'temp', 'custom_label']
+                    if columns:
+                        missing_columns = [col for col in columns if col not in df.columns]
+                        if missing_columns:
+                            logger.warning(f"Missing columns in API response: {missing_columns}")
+                        df = df[columns]
                     return df
                 else:
                     error = await response.text()
