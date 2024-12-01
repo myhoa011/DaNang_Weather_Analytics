@@ -41,7 +41,6 @@ class DataIngestion:
     async def load_weather_data(self):
         if not os.path.exists(self.data_file):
             return None
-
         try:
             async with aiofiles.open(self.data_file, "r") as file:
                 content = await file.read()

@@ -23,7 +23,13 @@ class WeatherData(BaseModel):
             pressure=raw_data.get("pressure"), 
             humidity=raw_data.get("humidity"),
             clouds=raw_data.get("clouds"),
-            visibility=raw_data.get("visibility"),
+            visibility=raw_data.get("visibility"),  
             wind_speed=raw_data.get("wind_speed"),
             wind_deg=raw_data.get("wind_deg")
         )
+        
+class Centroid(BaseModel):
+    cluster_name: str
+    scaled_temp: float
+    temp: float
+    

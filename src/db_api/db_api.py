@@ -10,6 +10,8 @@ from contextlib import asynccontextmanager
 sys.path.append(".")
 from src.logger import logger
 from src.db_api.weather import WeatherData
+from src.db_api.cluster import ClusterData
+from src.db_api.controid import Centroid
 
 # Load environment variables
 load_dotenv()
@@ -166,6 +168,161 @@ async def save_processed_weather_bulk(processed_data_list: List[WeatherData]) ->
         logger.error(f"Error saving bulk processed weather data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/cluster_data/bulk")
+async def save_cluster_data_bulk(cluster_data: List[ClusterData]) -> Dict[str, Any]:
+    """
+    Lưu dữ liệu phân cụm vào cơ sở dữ liệu theo từng batch để tránh mất dữ liệu.
+    """
+    try:
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                query = """
+                INSERT INTO cluster_data 
+                (dt, temp, pressure, humidity, clouds, visibility, wind_speed, wind_deg, date, month, scaled_temp, kmean_label, custom_label)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """
+                # Tách dữ liệu thành các batch nhỏ (mỗi batch tối đa 100 dòng)
+                batch_size = 100
+                total_saved = 0
+
+                for i in range(0, len(cluster_data), batch_size):
+                    batch = cluster_data[i:i + batch_size]
+                    values = [
+                        (data.dt, data.temp, data.pressure, data.humidity,
+                         data.clouds, data.visibility, data.wind_speed, data.wind_deg,
+                         data.date, data.month, data.scaled_temp, data.kmean_label, data.custom_label)
+                        for data in batch
+                    ]
+
+                    try:
+                        await cur.executemany(query, values)
+                        total_saved += len(values)
+                    except Exception as e:
+                        logger.error(f"Error saving batch starting at index {i}: {e}")
+                        continue
+
+        return {
+            "count": total_saved,
+            "message": "Clustered weather data saved successfully"
+        }
+
+    except Exception as e:
+        logger.error(f"Error saving bulk cluster data weather data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/delete_all_data")
+async def delete_all_cluster_data() -> Dict[str, Any]:
+    """
+    Xóa toàn bộ dữ liệu trong bảng cluster_data.
+    
+    Returns:
+        Dict[str, Any]: Trạng thái xóa dữ liệu.
+    """
+    try:
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                query = """
+                DELETE FROM cluster_data
+                """
+                await cur.execute(query)  # Xóa toàn bộ dữ liệu trong bảng
+                logger.info("All data in 'cluster_data' table has been deleted successfully.")
+
+        return {
+            "message": "Clustered weather data deleted successfully"
+        }
+
+    except Exception as e:
+        logger.error(f"Error deleting all cluster data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/centroids")
+async def save_centroid(data_centroids: List[Centroid]) -> Dict[str, Any]:
+    """
+    Lưu dữ liệu centroid vào cơ sở dữ liệu.
+
+    Args:
+        data_centroids (List[Centroid]): Danh sách các centroid cần lưu.
+
+    Returns:
+        Dict[str, Any]: Kết quả lưu trữ dữ liệu.
+    """
+    try:
+        # Kết nối đến cơ sở dữ liệu
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                # Truncate bảng trước khi chèn mới
+                await cur.execute("TRUNCATE TABLE centroids")
+                logger.info("Cleared old centroids data.")
+
+                # Câu lệnh chèn dữ liệu
+                query = """
+                INSERT INTO centroids 
+                (cluster_name, temp, scaled_temp) 
+                VALUES (%s, %s, %s)
+                """
+                # Tạo danh sách giá trị từ dữ liệu đầu vào
+                values = [
+                    (data.cluster_name, data.temp, data.scaled_temp)
+                    for data in data_centroids
+                ]
+
+                # Thực thi lệnh chèn dữ liệu hàng loạt
+                await cur.executemany(query, values)
+
+        # Trả về kết quả thành công
+        return {
+            "count": len(data_centroids),
+            "message": "Centroids saved successfully"
+        }
+
+    except Exception as e:
+        # Ghi log và trả về lỗi nếu xảy ra
+        logger.error(f"Error saving centroids data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/centroids")
+async def delete_all_cluster_data() -> Dict[str, Any]:
+    try:
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                query = """
+                DELETE FROM centroids
+                """
+                await cur.execute(query)  # Xóa toàn bộ dữ liệu trong bảng
+                logger.info("All data in 'centroids' table has been deleted successfully.")
+
+        return {
+            "message": "centroids data deleted successfully"
+        }
+
+    except Exception as e:
+        logger.error(f"Error deleting all centroids: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data_cluster", response_model=List[ClusterData])
+async def get_all_weather():
+    try:
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                query = "SELECT * FROM cluster_data ORDER BY dt DESC"
+                await cur.execute(query)
+                results = await cur.fetchall()
+                return [ClusterData(**row) for row in results]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/get_centroids", response_model= List[Centroid])
+async def get_centroid():
+    try: 
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                query = "SELECT * FROM centroids"
+                await cur.execute(query)
+                results = await cur.fetchall()
+                return [Centroid(**row) for row in results]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @app.get("/api/weather/{timestamp}", response_model=WeatherData)
 async def get_weather(timestamp: int):
     """
@@ -183,7 +340,7 @@ async def get_weather(timestamp: int):
     try:
         async with weather_api.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                query = "SELECT * FROM raw_weather_data WHERE dt = %s"
+                query = "SELECT * FROM processed_weather_data WHERE dt = %s"
                 await cur.execute(query, (timestamp,))
                 result = await cur.fetchone()
                 if not result:
@@ -206,7 +363,7 @@ async def get_all_weather():
     try:
         async with weather_api.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                query = "SELECT * FROM raw_weather_data ORDER BY dt DESC"
+                query = "SELECT * FROM processed_weather_data ORDER BY dt DESC"
                 await cur.execute(query)
                 results = await cur.fetchall()
                 return [WeatherData(**row) for row in results]
