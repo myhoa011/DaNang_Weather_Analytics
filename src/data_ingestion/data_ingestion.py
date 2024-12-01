@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
+
 sys.path.append(".")
 from src.logger import logger
 
@@ -26,6 +27,7 @@ class DataIngestion:
         self.data_file = f"{self.data_path}/weather_data.json"
         self.processed_file = f"{self.data_path}/processed_data.json"
         self.session = None
+        
         
         # Create the data directory if it does not exist
         os.makedirs(self.data_path, exist_ok=True)
@@ -339,6 +341,7 @@ class DataIngestion:
         """Start the Weather Data Ingestion service"""
         try:
             logger.info("Starting Weather Data Ingestion service")
+        
             
             # First run - process all existing data
             await self.ingest(is_initial_run=True)
@@ -352,6 +355,7 @@ class DataIngestion:
             )
             
             self.scheduler.start()
+            
 
             try:
                 while True:
@@ -371,6 +375,9 @@ class DataIngestion:
             logger.info("Weather Data Ingestion service stopped")
         except Exception as e:
             logger.error(f"Error stopping service: {e}")
+
+
+
 
 async def main():
     api_url = os.getenv('DB_API_URL')
