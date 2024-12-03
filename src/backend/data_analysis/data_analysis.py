@@ -313,7 +313,7 @@ class WeatherAnalysis:
             ##bắt đầu xử lý
             #temp
             # Phân tích Seasonal Decomposition
-            result_temp = seasonal_decompose(df['temp'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_temp = seasonal_decompose(df['temp'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             
             # Tạo DataFrame từ các thành phần của result
             temp_df = pd.DataFrame({
@@ -325,7 +325,7 @@ class WeatherAnalysis:
             })
             
             #pressure
-            result_pressure = seasonal_decompose(df['pressure'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_pressure = seasonal_decompose(df['pressure'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             # Tạo DataFrame từ các thành phần của result
             pressure_df = pd.DataFrame({
                 'dt': df['dt'], 
@@ -336,7 +336,7 @@ class WeatherAnalysis:
             })
             
             #humidity
-            result_humidity = seasonal_decompose(df['humidity'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_humidity = seasonal_decompose(df['humidity'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             # Tạo DataFrame từ các thành phần của result
             humidity_df = pd.DataFrame({
                 'dt': df['dt'], 
@@ -347,7 +347,7 @@ class WeatherAnalysis:
             })
             
             #clouds
-            result_clouds = seasonal_decompose(df['clouds'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_clouds = seasonal_decompose(df['clouds'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             # Tạo DataFrame từ các thành phần của result
             clouds_df = pd.DataFrame({
                 'dt': df['dt'], 
@@ -358,7 +358,7 @@ class WeatherAnalysis:
             })
 
             #visibility
-            result_visibility = seasonal_decompose(df['visibility'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_visibility = seasonal_decompose(df['visibility'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             # Tạo DataFrame từ các thành phần của result
             visibility_df = pd.DataFrame({
                 'dt': df['dt'], 
@@ -369,7 +369,7 @@ class WeatherAnalysis:
             })
 
             #wind_speed
-            result_wind_speed = seasonal_decompose(df['wind_speed'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_wind_speed = seasonal_decompose(df['wind_speed'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             # Tạo DataFrame từ các thành phần của result
             wind_speed_df = pd.DataFrame({
                 'dt': df['dt'], 
@@ -380,7 +380,7 @@ class WeatherAnalysis:
             })
 
             #wind_deg
-            result_wind_deg = seasonal_decompose(df['wind_deg'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_wind_deg = seasonal_decompose(df['wind_deg'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             
             # Tạo DataFrame từ các thành phần của result
             wind_deg_df = pd.DataFrame({

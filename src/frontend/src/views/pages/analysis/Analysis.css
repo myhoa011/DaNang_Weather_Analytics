@@ -1,0 +1,11 @@
+strong{
+    margin-top: 50px;
+    color: red;
+    margin-bottom: 50px;
+    padding: 10px 30px;
+    background-color: wheat;
+    border-radius: 5px;
+}
+.box_component{
+    margin-top: 100px;
+}
