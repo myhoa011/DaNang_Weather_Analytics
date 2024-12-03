@@ -12,6 +12,7 @@ from src.logger import logger
 from src.db_api.weather import WeatherData
 from src.db_api.cluster import ClusterData
 from src.db_api.controid import Centroid
+from fastapi.middleware.cors import CORSMiddleware
 
 # Load environment variables
 load_dotenv()
@@ -88,6 +89,19 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Weather API",
     lifespan=lifespan
+)
+
+origins = [
+    "http://localhost:3000",  # Domain của frontend
+    # Thêm các domain khác nếu cần
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  # Chỉ định domain được phép
+    allow_credentials=True,
+    allow_methods=["*"],  # Cho phép tất cả các phương thức (GET, POST, ...)
+    allow_headers=["*"],  # Cho phép tất cả các headers
 )
 
 weather_api = WeatherAPI()
@@ -170,9 +184,6 @@ async def save_processed_weather_bulk(processed_data_list: List[WeatherData]) ->
 
 @app.post("/api/cluster_data/bulk")
 async def save_cluster_data_bulk(cluster_data: List[ClusterData]) -> Dict[str, Any]:
-    """
-    Lưu dữ liệu phân cụm vào cơ sở dữ liệu theo từng batch để tránh mất dữ liệu.
-    """
     try:
         async with weather_api.pool.acquire() as conn:
             async with conn.cursor() as cur:
@@ -203,7 +214,6 @@ async def save_cluster_data_bulk(cluster_data: List[ClusterData]) -> Dict[str, A
 
         return {
             "count": total_saved,
-            "message": "Clustered weather data saved successfully"
         }
 
     except Exception as e:
@@ -304,7 +314,7 @@ async def get_all_weather():
     try:
         async with weather_api.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                query = "SELECT * FROM cluster_data ORDER BY dt DESC"
+                query = "SELECT * FROM cluster_data"
                 await cur.execute(query)
                 results = await cur.fetchall()
                 return [ClusterData(**row) for row in results]

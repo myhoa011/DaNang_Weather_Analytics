@@ -31,6 +31,16 @@ const _nav = [
         name: 'Clsuter chart',
         to: '/cluster',
       },
+      {
+        component: CNavItem,
+        name: `Tomorrow's temp`,
+        to: '/predict-temp-next-day',
+      },
+      {
+        component: CNavItem,
+        name: `Predict season for day`,
+        to: '/predict-season-for-day',
+      },
     ],
   },
 ]

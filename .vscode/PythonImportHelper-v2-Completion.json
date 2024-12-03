@@ -558,6 +558,14 @@
         "documentation": {}
     },
     {
+        "label": "CORSMiddleware",
+        "importPath": "fastapi.middleware.cors",
+        "description": "fastapi.middleware.cors",
+        "isExtraImport": true,
+        "detail": "fastapi.middleware.cors",
+        "documentation": {}
+    },
+    {
         "label": "AsyncExitStack",
         "importPath": "contextlib",
         "description": "contextlib",
@@ -1123,7 +1131,16 @@
         "kind": 5,
         "importPath": "src.db_api.db_api",
         "description": "src.db_api.db_api",
-        "peekOfCode": "app = FastAPI(\n    title=\"Weather API\",\n    lifespan=lifespan\n)\nweather_api = WeatherAPI()\n@app.post(\"/api/raw_weather/bulk\")\nasync def save_raw_weather_bulk(raw_data_list: List[WeatherData]) -> Dict[str, Any]:\n    \"\"\"\n    Save multiple raw weather data entries in bulk.\n    Args:",
+        "peekOfCode": "app = FastAPI(\n    title=\"Weather API\",\n    lifespan=lifespan\n)\norigins = [\n    \"http://localhost:3000\",  # Domain của frontend\n    # Thêm các domain khác nếu cần\n]\napp.add_middleware(\n    CORSMiddleware,",
+        "detail": "src.db_api.db_api",
+        "documentation": {}
+    },
+    {
+        "label": "origins",
+        "kind": 5,
+        "importPath": "src.db_api.db_api",
+        "description": "src.db_api.db_api",
+        "peekOfCode": "origins = [\n    \"http://localhost:3000\",  # Domain của frontend\n    # Thêm các domain khác nếu cần\n]\napp.add_middleware(\n    CORSMiddleware,\n    allow_origins=origins,  # Chỉ định domain được phép\n    allow_credentials=True,\n    allow_methods=[\"*\"],  # Cho phép tất cả các phương thức (GET, POST, ...)\n    allow_headers=[\"*\"],  # Cho phép tất cả các headers",
         "detail": "src.db_api.db_api",
         "documentation": {}
     },
