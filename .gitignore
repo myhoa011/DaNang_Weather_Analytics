@@ -24,7 +24,19 @@ venv/
 # Ignore env file
 *.env
 
-.lh
-.history
-.idea
-.vscode
+# React / Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp.cjs
+.pnp.loader.mjs
+dist/
+build/
+coverage/
+.DS_Store
+.eslintcache
+.cache/
+.vscode/
+package-lock.json
+yarn.lock
