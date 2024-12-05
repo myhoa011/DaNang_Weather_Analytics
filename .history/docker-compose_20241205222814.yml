@@ -1,0 +1,150 @@
+services:
+  redis:
+    container_name: redis_server
+    image: redis:7
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    restart: always
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - data_mining_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  mysql:
+    container_name: mysql_server
+    image: mysql:8.0
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+    ports:
+      - "6603:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./src/mysql/init_db:/docker-entrypoint-initdb.d
+      - ./src/mysql/config/mysql.cnf:/etc/mysql/conf.d/mysql.cnf
+    networks:
+      - data_mining_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+  db_api:
+    container_name: db_api_server
+    restart: always
+    build:
+      context: src
+      dockerfile: db_api/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
+      - ./configs:/app/configs
+    networks:
+      - data_mining_network
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ./.env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  crawl_data:
+    container_name: crawl_data_server
+    restart: always
+    build:
+      context: src
+      dockerfile: crawl_data/Dockerfile
+    volumes:
+      - ./logs:/app/logs
+      - ./configs:/app/configs  
+      - ./data:/app/data
+    networks:
+      - data_mining_network
+    env_file:
+      - ./.env
+  data_ingestion:
+    container_name: data_ingestion_server
+    restart: always
+    build:
+      context: src
+      dockerfile: data_ingestion/Dockerfile
+    volumes:
+      - ./logs:/app/logs
+      - ./configs:/app/configs
+      - ./data:/app/data
+    depends_on:
+      db_api:
+        condition: service_healthy
+    networks:
+      - data_mining_network
+    env_file:
+      - ./.env
+# backend
+  data_prediction:
+    container_name: data_prediction_server
+    restart: always
+    build:
+      context: src
+      dockerfile: backend/data_prediction/Dockerfile
+    volumes:
+      - ./logs:/app/logs
+      - ./configs:/app/configs
+    depends_on:
+      db_api:
+        condition: service_healthy
+    networks:
+      - data_mining_network
+    env_file:
+      - ./.env
+  data_analysis:
+    container_name: data_analysis_server
+    restart: always
+    build:
+      context: src
+      dockerfile: backend/data_analysis/Dockerfile
+    volumes:
+      - ./logs:/app/logs
+      - ./configs:/app/configs
+    depends_on:
+      db_api:
+        condition: service_healthy
+    networks:
+      - data_mining_network
+    env_file:
+      - ./.env
+  data_clustering:
+    container_name: data_clustering_server
+    restart: always
+    build:
+      context: src
+      dockerfile: backend/data_clustering/Dockerfile
+    volumes:
+      - ./logs:/app/logs
+      - ./configs:/app/configs
+    depends_on:
+      - db_api
+    networks:
+      - data_mining_network
+    env_file:
+      - ./.env
+networks:
+  data_mining_network:
+    driver: bridge
+volumes:
+  mysql_data:
+  redis_data:

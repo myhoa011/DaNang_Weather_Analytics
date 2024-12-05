@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager, suppress
 from src.backend.data_clustering.weather_model import WeatherData
 from typing import Dict, Any
 import pandas as pd
-from src.db_api.controid import Centroid, CentroidsResponse
+from .controid import Centroid, CentroidsResponse
 
 # Initialize global objects
 cluster = WeatherCluster()
@@ -92,16 +92,15 @@ app = FastAPI(
 )
 
 origins = [
-    "http://localhost:3000",  # Domain của frontend
-    # Thêm các domain khác nếu cần
+    "http://localhost:3000", 
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,  # Chỉ định domain được phép
+    allow_origins=origins,  
     allow_credentials=True,
-    allow_methods=["*"],  # Cho phép tất cả các phương thức (GET, POST, ...)
-    allow_headers=["*"],  # Cho phép tất cả các headers
+    allow_methods=["*"],  
+    allow_headers=["*"], 
 )
 
 @app.get("/")

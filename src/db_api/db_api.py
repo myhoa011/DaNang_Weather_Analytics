@@ -562,7 +562,6 @@ async def get_filer() -> List[Dict[str, Any]]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))  
     
-    
 #RE-SAMPLING về tháng TREND
 @app.get("/resampleMonth")
 async def get_filer() -> List[Dict[str, Any]]:  
@@ -653,7 +652,6 @@ async def get_filer() -> List[Dict[str, Any]]:
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) 
-
 
 #CORRELATON
 #xóa correlation cũ
@@ -886,11 +884,9 @@ async def save_cluster_data_bulk(cluster_data: List[ClusterData]) -> Dict[str, A
                     except Exception as e:
                         logger.error(f"Error saving batch starting at index {i}: {e}")
                         continue
-
         return {
             "count": total_saved,
         }
-
     except Exception as e:
         logger.error(f"Error saving bulk cluster data weather data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -968,7 +964,6 @@ async def get_spider():
                 return [Spider(**row) for row in results]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.delete("/api/centroids")
 async def delete_all_cluster_data() -> Dict[str, Any]:
@@ -1084,45 +1079,6 @@ async def save_temp_pred(data: Temp_pred) -> Dict[str, Any]:
             status_code=500,
             detail="Lỗi khi lưu dữ liệu dự đoán nhiệt độ"
         )
-
-@app.get("/api/weather/{timestamp}", response_model=WeatherData)
-async def get_weather(timestamp: int):
-    """
-    Get weather data for a specific timestamp.
-    
-    Args:
-        timestamp (int): Unix timestamp to query
-        
-    Returns:
-        WeatherData: Weather data object for the specified timestamp
-        
-    Raises:
-        HTTPException: If data not found or database error occurs
-    """
-    try:
-        async with weather_api.pool.acquire() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                query = "SELECT * FROM raw_weather_data WHERE dt = %s"
-                await cur.execute(query, (timestamp,))
-                result = await cur.fetchone()
-                if not result:
-                    raise HTTPException(status_code=404, detail="Weather data not found")
-                return WeatherData(**result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/get_centroids", response_model= List[Centroid])
-async def get_centroid():
-    try: 
-        async with weather_api.pool.acquire() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                query = "SELECT * FROM raw_weather_data ORDER BY dt DESC"
-                await cur.execute(query)
-                results = await cur.fetchall()
-                return [Centroid(**row) for row in results]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
 
 # ====================================================================
 
