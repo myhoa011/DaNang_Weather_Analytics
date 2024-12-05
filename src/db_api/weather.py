@@ -32,4 +32,14 @@ class Centroid(BaseModel):
     cluster_name: str
     scaled_temp: float
     temp: float
+
+class Temp_pred (BaseModel):
+    temp_predict: float
+    date: datetime
+
+class Spider (BaseModel):
+    season: str
+    days: int
+    year: int
+
     

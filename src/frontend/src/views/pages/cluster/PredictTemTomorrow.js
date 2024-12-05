@@ -4,8 +4,8 @@ import { predictTempTomorrow, calculateSeasonProbabilities } from '../../../stor
 
 // Ánh xạ cluster sang mùa
 const clusterToSeason = {
-  cluster_0: 'Winter',
-  cluster_1: 'Spring',
+  cluster_0: 'Spring',
+  cluster_1: 'Winter',
   cluster_2: 'Summer',
   cluster_3: 'Autumn',
 }

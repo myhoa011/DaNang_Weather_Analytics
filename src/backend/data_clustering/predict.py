@@ -10,6 +10,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from fastapi import HTTPException
 from sklearn.cluster import KMeans
+import httpx
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -20,6 +21,7 @@ class Predict:
         """
         Initialize Predict class with RandomForest models and other utilities for weather data predictions.
         """
+        self.base_url = "http://localhost:8000/api"
         self.is_trained_temp = False
         self.is_trained_season = False
         self.last_trained_temp = None
@@ -57,7 +59,7 @@ class Predict:
 
     async def predict_next_day_temperature(self) -> float:
         """
-        Predict the next day's temperature using the trained model.
+        Predict the next day's temperature using the trained model and save it to the database.
         """
         try:
             if not self.is_trained_temp:
@@ -66,7 +68,26 @@ class Predict:
             df = await self.data_service.get_weather_data()
             df = await self.data_service.process_data(df)
             today_features = df[self.features].iloc[-1].to_frame().T
-            return self.temperature_model.predict(today_features)[0]
+            predicted_temp = self.temperature_model.predict(today_features)[0]
+
+            # Lấy ngày hiện tại
+            current_date = pd.to_datetime('now').strftime('%Y-%m-%d')
+
+            data_save = {
+                        "temp_predict": float(predicted_temp),
+                        "date": current_date
+                    }
+            print(data_save)
+
+            # Gọi API để lưu nhiệt độ dự đoán và ngày hiện tại vào database
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.base_url}/temp_pred_save",
+                    json= data_save
+                )
+                response.raise_for_status()
+
+            return predicted_temp
 
         except Exception as e:
             logger.error(f"Error predicting temperature: {e}")

@@ -28,9 +28,7 @@ const TemperaturePlot = () => {
     return (
       <div style={{ textAlign: 'center', padding: '20px' }}>
         <div className="spinner" style={{ marginBottom: '10px' }}></div>
-        <div>Loading... ĐỢI NHIỀU TÍ</div>
-        <div>Góc đỗ lỗi: do data nhiều load lâu chớ không phải bug đâu. Tính năng cả đấy</div>
-        <div>Tí load lên rồi, vẫn còn lag đấy. Hãy thật bình tĩnh khi sử dụng tính năng</div>
+        <div>Loading...</div>
       </div>
     )
   }

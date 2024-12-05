@@ -45,3 +45,23 @@ CREATE TABLE centroids (
     scaled_temp FLOAT NOT NULL,
     temp FLOAT NOT NULL
 );
+
+
+CREATE TABLE IF NOT EXISTS temp_tomorrow_predict(
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    temp_predict FLOAT,
+    prediction_date INT,
+    date DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS spider(
+     id INT AUTO_INCREMENT PRIMARY KEY,
+     season varchar(255),
+    days int,
+    year int
+);
+
+CREATE TABLE IF NOT EXISTS season_for_day(
+ id INT AUTO_INCREMENT PRIMARY KEY,
+ season_pred varchar(255)
+)

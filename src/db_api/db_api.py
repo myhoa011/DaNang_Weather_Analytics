@@ -13,6 +13,8 @@ from src.db_api.weather import WeatherData
 from src.db_api.cluster import ClusterData
 from src.db_api.controid import Centroid
 from fastapi.middleware.cors import CORSMiddleware
+from src.db_api.weather import Temp_pred
+from src.db_api.weather import Spider
 
 # Load environment variables
 load_dotenv()
@@ -247,15 +249,6 @@ async def delete_all_cluster_data() -> Dict[str, Any]:
 
 @app.post("/api/centroids")
 async def save_centroid(data_centroids: List[Centroid]) -> Dict[str, Any]:
-    """
-    Lưu dữ liệu centroid vào cơ sở dữ liệu.
-
-    Args:
-        data_centroids (List[Centroid]): Danh sách các centroid cần lưu.
-
-    Returns:
-        Dict[str, Any]: Kết quả lưu trữ dữ liệu.
-    """
     try:
         # Kết nối đến cơ sở dữ liệu
         async with weather_api.pool.acquire() as conn:
@@ -289,6 +282,56 @@ async def save_centroid(data_centroids: List[Centroid]) -> Dict[str, Any]:
         # Ghi log và trả về lỗi nếu xảy ra
         logger.error(f"Error saving centroids data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# spider
+@app.post("/api/spider")
+async def save_spider(data: List[Spider]) -> Dict[str, Any]:
+    try:
+        # Kết nối đến cơ sở dữ liệu
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                # Truncate bảng trước khi chèn mới
+                await cur.execute("TRUNCATE TABLE spider")
+                logger.info("Cleared old spider data.")
+
+                # Câu lệnh chèn dữ liệu
+                query = """
+                INSERT INTO spider 
+                (season, days, year) 
+                VALUES (%s, %s, %s)
+                """
+                # Tạo danh sách giá trị từ dữ liệu đầu vào
+                values = [
+                    (data.season, data.days, data.year)
+                    for data in data
+                ]
+
+                # Thực thi lệnh chèn dữ liệu hàng loạt
+                await cur.executemany(query, values)
+
+        # Trả về kết quả thành công
+        return {
+            "count": len(data),
+            "message": "Centroids saved successfully"
+        }
+
+    except Exception as e:
+        # Ghi log và trả về lỗi nếu xảy ra
+        logger.error(f"Error saving centroids data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/get_spider", response_model= List[Spider])
+async def get_spider():
+    try: 
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                query = "SELECT * FROM spider"
+                await cur.execute(query)
+                results = await cur.fetchall()
+                return [Spider(**row) for row in results]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/api/centroids")
 async def delete_all_cluster_data() -> Dict[str, Any]:
@@ -332,21 +375,83 @@ async def get_centroid():
                 return [Centroid(**row) for row in results]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/temp_pred", response_model=Temp_pred)
+async def get_temp_pred():
+    try:
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                query = "SELECT * FROM temp_tomorrow_predict"
+                logger.debug(f"Executing query: {query}")
+                await cur.execute(query)
+                result = await cur.fetchone()
+                logger.debug(f"Query result: {result}")
+
+                if not result:
+                    logger.warning("Không tìm thấy bản ghi dự đoán nhiệt độ trong bảng.")
+                    raise HTTPException(
+                        status_code=404, 
+                        detail="Không tìm thấy dự đoán nhiệt độ"
+                    )
+
+                # Trả về kết quả
+                logger.info(f"Dữ liệu dự đoán nhiệt độ: {result}")
+                return Temp_pred(**result)
+
+    except aiomysql.Error as sql_error:
+        logger.error(f"Lỗi truy vấn SQL: {sql_error}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Lỗi khi truy vấn cơ sở dữ liệu"
+        )
+
+    except Exception as e:
+        logger.error(f"Lỗi không mong muốn khi lấy dữ liệu dự đoán nhiệt độ: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Lỗi khi truy vấn dữ liệu dự đoán nhiệt độ"
+        )
+
+@app.post("/api/temp_pred_save")
+async def save_temp_pred(data: Temp_pred) -> Dict[str, Any]:
+    try:
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                # Xóa dữ liệu cũ trước khi chèn mới
+                # await cur.execute("TRUNCATE TABLE temp_tomorrow_predict")
+                # logger.info("Đã xóa dữ liệu cũ trong bảng temp_tomorrow_predict.")
+
+                query = """
+                INSERT INTO temp_tomorrow_predict 
+                (temp_predict, date) 
+                VALUES (%s, %s)
+                """
+                values = (data.temp_predict, data.date)
+                await cur.execute(query, values)
+                logger.info("Đã lưu dữ liệu dự đoán nhiệt độ mới.")
+
+        return {
+            "message": "Đã lưu temp_tomorrow_predict thành công"
+        }
+
+    except aiomysql.Error as sql_error:
+        logger.error(f"Lỗi truy vấn SQL: {sql_error}")
+        raise HTTPException(
+            status_code=500,
+            detail="Lỗi khi lưu dữ liệu vào cơ sở dữ liệu"
+        )
+
+    except Exception as e:
+        logger.error(f"Lỗi khi lưu dữ liệu dự đoán nhiệt độ: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Lỗi khi lưu dữ liệu dự đoán nhiệt độ"
+        )
+
+ 
     
 @app.get("/api/weather/{timestamp}", response_model=WeatherData)
 async def get_weather(timestamp: int):
-    """
-    Get weather data for a specific timestamp.
-    
-    Args:
-        timestamp (int): Unix timestamp to query
-        
-    Returns:
-        WeatherData: Weather data object for the specified timestamp
-        
-    Raises:
-        HTTPException: If data not found or database error occurs
-    """
     try:
         async with weather_api.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -385,7 +490,7 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         "src.db_api.db_api:app",
-        host="0.0.0.0", 
+        host="localhost", 
         port=8000, 
         reload=True
     ) 

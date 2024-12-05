@@ -1,172 +1,96 @@
-import asyncio
-import aiohttp
+import requests
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from math import pi
-from dotenv import load_dotenv
-from src.logger import logger
-import os
-from typing import List, Dict, Any
-from fastapi import HTTPException
+from datetime import datetime
+from typing import List, Dict
 
-load_dotenv()
-
-
-class Spider:
-    def __init__(self):
-        self.db_api_url = os.getenv("DB_API_URL")
-        self.session = None
-        self.features = ["temp", "pressure", "humidity", "clouds", "visibility", "wind_speed", "wind_deg"]
-
-    def process_data_for_spider_chart(self, df: pd.DataFrame) -> pd.DataFrame:
+class ClusterToSpiderProcessor:
+    def __init__(self, source_api_url: str, target_api_url: str):
         """
-        Xử lý dữ liệu để chuẩn bị cho việc vẽ Spider Chart cho 2 năm gần nhất.
+        Khởi tạo lớp ClusterToSpiderProcessor.
 
-        Args:
-            df (pd.DataFrame): Dữ liệu thời tiết đã xử lý, bao gồm các cột:
-                - 'dt': Ngày (datetime).
-                - 'temp': Nhiệt độ (float).
-                - 'pressure': Áp suất (float).
-                - 'humidity': Độ ẩm (float).
-                - 'clouds': Độ bao phủ mây (float).
-                - 'wind_speed': Tốc độ gió (float).
-
-        Returns:
-            pd.DataFrame: Dữ liệu trung bình cho 2 năm gần nhất với các cột:
-                - 'year': Năm.
-                - 'temp', 'pressure', 'humidity', 'clouds', 'wind_speed': Các giá trị trung bình cho từng năm.
+        :param source_api_url: URL API để lấy dữ liệu nguồn (`/api/data_cluster`).
+        :param target_api_url: URL API để lưu dữ liệu (`/api/spider`).
         """
+        self.source_api_url = source_api_url
+        self.target_api_url = target_api_url
+        self.dataframe = None
+        self.processed_data = None
+        self.label_to_season = {0: "Spring", 1: "Winter", 2: "Summer", 3: "Autumn"}
+
+    def fetch_data(self):
+        """Gọi API nguồn để lấy dữ liệu."""
         try:
-            # Bước 1: Thêm cột 'year' từ cột 'dt'
-            if 'dt' not in df.columns:
-                raise ValueError("Dữ liệu đầu vào không chứa cột 'dt'.")
+            response = requests.get(self.source_api_url)
+            if response.status_code != 200:
+                raise Exception(f"Failed to fetch data: {response.status_code}, {response.text}")
 
-            df['year'] = pd.to_datetime(df['dt']).dt.year
-
-            # Bước 2: Lấy danh sách 2 năm gần nhất
-            latest_years = sorted(df['year'].unique())[-2:]
-            if len(latest_years) < 2:
-                logger.warning("Không đủ dữ liệu cho 2 năm gần nhất. Sử dụng tất cả các năm có sẵn.")
-
-            # Bước 3: Lọc dữ liệu cho 2 năm gần nhất
-            df_latest_years = df[df['year'].isin(latest_years)]
-
-            # Bước 4: Tính trung bình các thông số thời tiết cho từng năm
-            features = ['temp', 'pressure', 'humidity', 'clouds', 'wind_speed']
-            missing_features = [col for col in features if col not in df.columns]
-            if missing_features:
-                raise ValueError(f"Các cột sau đang thiếu trong dữ liệu: {missing_features}")
-
-            yearly_data = df_latest_years.groupby('year')[features].mean().reset_index()
-
-            logger.info(f"Processed data for Spider Chart:\n{yearly_data}")
-            return yearly_data
-
+            data = response.json()
+            self.dataframe = pd.DataFrame(data)
+            self.dataframe["date"] = pd.to_datetime(self.dataframe["date"])  # Chuyển đổi cột 'date' thành datetime
         except Exception as e:
-            logger.error(f"Error processing data for Spider Chart: {e}")
-            raise HTTPException(status_code=500, detail="Error processing data for Spider Chart.")
+            raise Exception(f"Error fetching data: {e}")
 
-    def plot_spider_charts(self, yearly_data: pd.DataFrame):
+    def process_data(self):
+        """Xử lý dữ liệu thành format phù hợp để gửi đến API `/api/spider`."""
+        if self.dataframe is None:
+            raise ValueError("No data fetched. Call fetch_data() first.")
+
+        # Nhóm dữ liệu theo `custom_label` và `year`
+        grouped_data = (
+            self.dataframe.groupby(["custom_label", self.dataframe["date"].dt.year])
+            .size()
+            .reset_index(name="days")
+        )
+
+        # Thêm cột 'season' từ `custom_label`
+        grouped_data["season"] = grouped_data["custom_label"].map(self.label_to_season)
+
+        # Đổi tên cột `date` thành `year`
+        grouped_data = grouped_data.rename(columns={"date": "year"})
+
+        # Lưu kết quả đã xử lý
+        self.processed_data = grouped_data
+
+    def get_processed_data(self) -> List[Dict[str, any]]:
         """
-        Vẽ biểu đồ Spider Chart từ dữ liệu trung bình của 2 năm gần nhất.
+        Trả về dữ liệu đã xử lý dưới dạng danh sách từ điển.
 
-        Args:
-            yearly_data (pd.DataFrame): Dữ liệu đã xử lý, bao gồm các cột:
-                - 'year': Năm.
-                - 'temp', 'pressure', 'humidity', 'clouds', 'wind_speed': Các giá trị trung bình.
-
-        Returns:
-            None: Hiển thị biểu đồ.
+        :return: Danh sách từ điển (season, days, year).
         """
+        if self.processed_data is None:
+            raise ValueError("Data has not been processed. Call process_data() first.")
+
+        return [
+            {"season": row["season"], "days": int(row["days"]), "year": int(row["year"])}
+            for _, row in self.processed_data.iterrows()
+        ]
+
+    def save_to_spider_api(self):
+        """Gửi dữ liệu đã xử lý đến API `/api/spider`."""
+        if self.processed_data is None:
+            raise ValueError("Data has not been processed. Call process_data() first.")
+
+        data_to_send = self.get_processed_data()
+
         try:
-            # Kiểm tra dữ liệu đầu vào
-            if yearly_data.empty:
-                raise ValueError("Dữ liệu đầu vào để vẽ Spider Chart là rỗng.")
-            
-            # Lấy danh sách các năm và các thông số
-            years = yearly_data['year'].tolist()
-            categories = ['temp', 'pressure', 'humidity', 'clouds', 'wind_speed']
-            num_vars = len(categories)
-
-            # Chuẩn bị góc cho các biểu đồ
-            angles = [n / float(num_vars) * 2 * pi for n in range(num_vars)]
-            angles += angles[:1]  # Đóng vòng tròn
-
-            # Tạo hình và các trục
-            fig, axes = plt.subplots(1, len(years), figsize=(12, 6), subplot_kw={'polar': True})
-            fig.suptitle("Spider Charts for 2 Latest Years", fontsize=16, y=1.05)
-
-            # Vẽ biểu đồ cho từng năm
-            for i, year in enumerate(years):
-                values = yearly_data[yearly_data['year'] == year][categories].values.flatten().tolist()
-                values += values[:1]  # Đóng vòng tròn
-
-                ax = axes[i] if len(years) > 1 else axes  # Xử lý trường hợp chỉ có 1 năm
-                ax.set_theta_offset(pi / 2)
-                ax.set_theta_direction(-1)
-                ax.set_xticks(angles[:-1])
-                ax.set_xticklabels(categories)
-
-                # Plot dữ liệu
-                ax.plot(angles, values, linewidth=2, linestyle='solid', label=f"Year {year}")
-                ax.fill(angles, values, alpha=0.4)
-
-                # Thêm tiêu đề cho từng biểu đồ
-                ax.set_title(f"Year {year}", fontsize=12, pad=20)
-
-            plt.tight_layout()
-            plt.show()
-            logger.info("Spider charts for the 2 latest years generated successfully.")
-
-        except Exception as e:
-            logger.error(f"Error generating spider charts: {e}")
-            raise HTTPException(status_code=500, detail="Error generating spider charts.")
-
-
-async def main():
-    """
-    Pipeline chính:
-    - Kết nối API để lấy dữ liệu thời tiết.
-    - Xử lý dữ liệu để chuẩn bị cho Spider Chart.
-    - Vẽ biểu đồ Spider Chart cho 2 năm gần nhất.
-    """
-    try:
-        spider = Spider()
-        
-        # Tạo kết nối HTTP session
-        spider.session = aiohttp.ClientSession()
-
-        # Lấy dữ liệu từ API
-        async with spider.session.get(f"{spider.db_api_url}/api/weather") as response:
-            if response.status == 200:
-                data = await response.json()
-                df = pd.DataFrame(data)
-
-                # Kiểm tra dữ liệu đầu vào
-                if df.empty:
-                    logger.error("Dữ liệu từ API là rỗng.")
-                    raise HTTPException(status_code=204, detail="No data retrieved from API.")
-
-                # Đảm bảo cột 'dt' được định dạng đúng
-                df['dt'] = pd.to_datetime(df['dt'], errors='coerce')
-
-                # Xử lý dữ liệu để vẽ Spider Chart
-                processed_data = spider.process_data_for_spider_chart(df)
-
-                # Vẽ biểu đồ Spider Chart
-                spider.plot_spider_charts(processed_data)
+            response = requests.post(self.target_api_url, json=data_to_send)
+            if response.status_code == 200:
+                print(f"Success: {response.json()}")
             else:
-                error_detail = await response.text()
-                logger.error(f"Failed to fetch data from API. Status: {response.status}, Error: {error_detail}")
-                raise HTTPException(status_code=response.status, detail="Error fetching weather data.")
+                print(f"Failed to save data: {response.text}")
+        except Exception as e:
+            raise Exception(f"Error saving data to API: {e}")
 
-    except Exception as e:
-        logger.error(f"Error in main pipeline: {e}")
-    finally:
-        # Đóng HTTP session
-        if spider.session:
-            await spider.session.close()
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# URL API
+source_api_url = "http://localhost:8000/api/data_cluster"
+target_api_url = "http://localhost:8000/api/spider"
+
+# Sử dụng lớp ClusterToSpiderProcessor
+processor = ClusterToSpiderProcessor(source_api_url, target_api_url)
+
+# Thực hiện các bước xử lý và lưu dữ liệu
+processor.fetch_data()         # Lấy dữ liệu từ API nguồn
+processor.process_data()       # Xử lý dữ liệu
+print(processor.get_processed_data())  # In dữ liệu đã xử lý
+processor.save_to_spider_api() # Gửi dữ liệu đã xử lý đến API đích

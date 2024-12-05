@@ -137,18 +137,6 @@ class WeatherCluster:
             await self.close()
 
     async def process_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Xử lý dữ liệu thời tiết:
-        - Chuyển đổi cột thời gian.
-        - Thêm cột tháng.
-        - Thay thế giá trị thiếu bằng giá trị trung bình hoặc gần nhất.
-
-        Args:
-            df (pd.DataFrame): Dữ liệu gốc từ API.
-
-        Returns:
-            pd.DataFrame: Dữ liệu đã xử lý.
-        """
         try:
             if df.empty:
                 raise ValueError("Input DataFrame is empty.")
@@ -157,9 +145,6 @@ class WeatherCluster:
             df["month"] = df["date"].dt.month
             df["temp"] = df["temp"] - 273.15
 
-            for col in df.select_dtypes(include=["number"]).columns:
-                df[col] = df[col].bfill().fillna(df[col].mean())
-
             logger.info("Weather data processed successfully.")
             return df
         except Exception as e:
@@ -167,17 +152,6 @@ class WeatherCluster:
             raise HTTPException(status_code=500, detail="Error processing weather data.")
 
     def cluster_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """
-        Phân cụm dữ liệu thời tiết bằng KMeans.
-
-        Args:
-            df (pd.DataFrame): Dữ liệu đã xử lý.
-
-        Returns:
-            Tuple[pd.DataFrame, pd.DataFrame]: 
-                - Dữ liệu với nhãn cụm.
-                - Điểm centroid của từng cụm với nhãn mùa.
-        """
         try:
             if df.empty:
                 raise ValueError("Input DataFrame is empty for clustering.")

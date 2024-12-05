@@ -1,13 +1,15 @@
-const URL = `http://localhost:8004/api`
+// const URL = `http://localhost:8004/api`
+import { environment } from '../utils/environment'
 
 export const predictTempTomorrow = async () => {
   try {
-    const response = await fetch(`${URL}/predict-temp-tomorrow`)
+    const response = await fetch(`${environment.BACKEND_URL}/temp_pred`)
     if (!response.ok) {
       throw new Error('Failed to fetch temperature prediction')
     }
     const data = await response.json()
-    return data.temperature_tomorrow || null
+
+    return data.temp_predict || null
   } catch (error) {
     console.error('Error fetching predicted temperature:', error)
     return null

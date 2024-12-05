@@ -40,12 +40,27 @@ async def lifespan(app: FastAPI):
         async def periodic_prediction():
             while True:
                 try:
-                    logger.info("Starting periodic prediction for next day's temperature...")
-                    await predict.predict_next_day_temperature()
-                    logger.info("Periodic prediction completed successfully.")
+                    # Thêm delay trước khi bắt đầu để đảm bảo các service khác đã sẵn sàng
+                    await asyncio.sleep(5)
+                    
+                    while True:
+                        try:
+                            # Thực hiện dự đoán
+                            prediction_result = await predict.predict_next_day_temperature()
+                            logger.info(f"Prediction completed: {prediction_result}")
+                            
+                            # Đợi 24 giờ trước lần dự đoán tiếp theo
+                            await asyncio.sleep(24 * 60 * 60)  # 24 hours
+                            
+                        except Exception as inner_e:
+                            logger.error(f"Error during prediction cycle: {inner_e}")
+                            # Đợi một khoảng thời gian ngắn trước khi thử lại
+                            await asyncio.sleep(60)  # 1 minute
                 except Exception as e:
-                    logger.error(f"Error during periodic prediction: {e}")
-                await asyncio.sleep(24 * 3600)
+                    logger.error(f"Critical error in periodic prediction: {e}")
+                    # Đợi trước khi khởi động lại vòng lặp
+                    await asyncio.sleep(60)
+
 
         # Start background tasks
         training_task = asyncio.create_task(periodic_training())
