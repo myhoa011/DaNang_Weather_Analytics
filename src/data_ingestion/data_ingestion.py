@@ -6,6 +6,7 @@ import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import aiofiles
 import pandas as pd
+from filelock import FileLock
 from dotenv import load_dotenv
 
 sys.path.append(".")
@@ -36,18 +37,31 @@ class DataIngestion:
                 json.dump({"last_processed_dt": 0}, f)
 
     async def load_weather_data(self):
-        if not os.path.exists(self.data_file):
-            return None
-
+        """Load weather data from file"""
+        lock = FileLock(f"{self.data_file}.lock")
+        
         try:
-            async with aiofiles.open(self.data_file, "r") as file:
-                content = await file.read()
-                data = json.loads(content)
-                return data if data else None
-                
+            with lock:
+                if not os.path.exists(self.data_file):
+                    logger.warning(f"Data file {self.data_file} not found")
+                    return []
+
+                async with aiofiles.open(self.data_file, 'r', encoding='utf-8') as f:
+                    content = await f.read()
+                    if not content:
+                        logger.warning("Data file is empty")
+                        return []
+                        
+                    data = json.loads(content)
+                    logger.info(f"Loaded {len(data)} weather records")
+                    return data
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON format: {e}")
+            return []
         except Exception as e:
             logger.error(f"Error loading weather data: {e}")
-            return None
+            return []
 
     @staticmethod
     def convert_to_vietnam_time(utc_timestamp: int) -> int:

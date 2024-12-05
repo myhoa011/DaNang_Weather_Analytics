@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     default-libmysqlclient-dev \
     pkg-config \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -20,6 +21,7 @@ RUN pip install --no-cache-dir \
     loguru==0.7.2 \
     PyYAML==6.0.2 \
     yacs==0.1.8 \
+    pandas==2.2.2 \
     cryptography==44.0.0 \
     redis==5.2.0
 
@@ -35,4 +37,5 @@ RUN mkdir -p logs configs
 
 ENV PYTHONPATH=/app
 
-CMD ["uvicorn", "src.db_api.db_api:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Command sẽ được override bởi docker-compose
+CMD ["uvicorn", "src.db_api.db_api:app", "--host", "0.0.0.0", "--port", "8000"]

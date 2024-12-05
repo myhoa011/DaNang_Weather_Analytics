@@ -1,13 +1,14 @@
 from typing import List, Dict, Any
 import os
-import time
 import aiohttp
 import asyncio
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
+from lightgbm import LGBMRegressor, early_stopping, log_evaluation
 from sklearn.preprocessing import StandardScaler
 from src.logger import logger
 import redis.asyncio as aioredis
@@ -31,18 +32,39 @@ class WeatherPredictor:
             'season_sin', 'season_cos'  # Chu kỳ 4 mùa
         ]
         
-        self.model = RandomForestRegressor(
-            n_estimators=100,
+        self.model = LGBMRegressor(
+            n_estimators=1000,
+            learning_rate=0.05,
             max_depth=10,
-            min_samples_split=2,
-            min_samples_leaf=1,
+            num_leaves=31,
+            min_child_samples=20,
             random_state=42,
-            n_jobs=-1
         )
         
         self.is_trained = False
+        self.best_iteration = None
         self.redis = None
-        self.is_listening = False
+
+    async def connect(self):
+        """Initialize HTTP session and Redis"""
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+            
+        if self.redis is None:
+            self.redis = await aioredis.from_url(
+                f'redis://redis:6379',
+                password=os.getenv('REDIS_PASSWORD')
+            )
+
+    async def close(self):
+        """Close HTTP session and Redis connection"""
+        if self.session:
+            await self.session.close()
+            self.session = None
+            
+        if self.redis:
+            await self.redis.close()
+            self.redis = None
 
     def add_time_features(self, df):
         """Thêm các features liên quan đến thời gian"""
@@ -67,110 +89,109 @@ class WeatherPredictor:
         
         return df
 
-    async def connect(self):
-        """Initialize HTTP session and Redis"""
-        if self.session is None:
-            self.session = aiohttp.ClientSession()
-            
-        if self.redis is None:
-            self.redis = await aioredis.from_url(
-                f'redis://redis:6379',
-                password=os.getenv('REDIS_PASSWORD')
-            )
-
-    async def close(self):
-        """Close HTTP session and Redis"""
-        if self.session:
-            await self.session.close()
-            self.session = None
-            
-        if self.redis:
-            await self.redis.close()
-            self.redis = None
-
-    async def start_redis_listener(self):
-        """Start listening for new data from Redis"""
-        try:
-            if self.redis is None:
-                self.redis = await aioredis.from_url(
-                    'redis://redis:6379',
-                    password=os.getenv('REDIS_PASSWORD')
-                )
-            
-            pubsub = self.redis.pubsub()
-            await pubsub.subscribe('weather_data')
-            self.is_listening = True
-            
-            logger.info("Started Redis listener")
-            
-            while self.is_listening:
-                message = await pubsub.get_message(ignore_subscribe_messages=True)
-                if message:
-                    data = json.loads(message['data'])
-                    logger.info(f"Received new data: dt={datetime.fromtimestamp(data['dt'])}")
+    async def wait_for_initial_data(self):
+        """Wait for initial data to be loaded in db"""
+        logger.info("Waiting for initial data load...")
+        while True:
+            try:
+                is_ready = await self.redis.get('db_initial_load_complete')
+                if is_ready:
+                    logger.info("Initial data is ready")
+                    return True
                     
-                    predictions = await self.predict([data])
-                    if predictions:
-                        # Format predictions cho database
-                        formatted_predictions = []
-                        created_at = int(datetime.now().timestamp())
-                        
-                        for pred in predictions:
-                            formatted_predictions.append({
-                                'dt': pred['dt'],
-                                'temp': float(pred['temp']),
-                                'hour': pred['hour'],
-                                'day': pred['day'],
-                                'month': pred['month'],
-                                'year': pred['year'],
-                                'created_at': created_at,
-                                'formatted_time': pred['formatted_time'],
-                                'prediction_hour': pred['prediction_hour']
-                            })
-                        
-                        try:
-                            async with self.session.post(
-                                f"{self.db_api_url}/api/weather/predictions",
-                                json=formatted_predictions
-                            ) as response:
-                                if response.status == 200:
-                                    logger.info(f"Saved {len(formatted_predictions)} predictions")
-                                else:
-                                    logger.error(f"Error saving predictions: {await response.text()}")
-                        except Exception as e:
-                            logger.error(f"Error saving predictions: {e}")
+                # Subscribe để nhận thông báo realtime
+                pubsub = self.redis.pubsub()
+                await pubsub.subscribe('db_status')
                 
-                await asyncio.sleep(1)
+                async for message in pubsub.listen():
+                    if message['type'] == 'message':
+                        if message['data'] == b'initial_load_complete':
+                            logger.info("Received initial data ready signal")
+                            await pubsub.unsubscribe('db_status')
+                            return True
                 
-        except Exception as e:
-            logger.error(f"Error in Redis listener: {e}")
-            self.is_listening = False
-        finally:
-            if self.redis:
-                await self.redis.aclose()
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"Error waiting for initial data: {e}")
+                await asyncio.sleep(5)
 
-    async def train_model(self, data: List[Dict]):
+    async def get_weather_data(self):
+        """Get historical weather data from API"""
+        try:
+            async with self.session.get(f"{self.db_api_url}/api/weather") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if not data:
+                        logger.warning("No historical data available")
+                        return pd.DataFrame()
+                    
+                    # Convert to DataFrame
+                    df = pd.DataFrame(data)
+                    
+                    # Convert timestamp to datetime
+                    df['dt'] = pd.to_datetime(df['dt'], unit='s')
+                    
+                    logger.info(f"Retrieved {len(df)} historical records")
+                    return df
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Error response from API: {error_text}")
+                    raise Exception(f"API error: {response.status}, {error_text}")
+        except Exception as e:
+            logger.error(f"Error fetching historical data: {e}")
+            return pd.DataFrame()
+
+    async def train_model(self, data: pd.DataFrame):
         """Train model with data"""
         try:
-            if len(data) < 2:
+            if data.empty:
+                logger.warning("No data available for training")
                 return
 
-            # Convert to DataFrame
-            df = pd.DataFrame(data)
-            
             # Add time-based features
-            df = self.add_time_features(df)
+            data = self.add_time_features(data)
             
             # Prepare features and target
-            X = df[self.feature_columns]
-            y = df['temp']
+            X = data[self.feature_columns]
+            y = data['temp']
+
+            # Split data into train and validation sets
+            X_train, X_val, y_train, y_val = train_test_split(
+                X, y, test_size=0.2, random_state=42
+            )
 
             # Scale features
-            X_scaled = self.scaler.fit_transform(X)
+            X_train_scaled = self.scaler.fit_transform(X_train)
+            X_val_scaled = self.scaler.transform(X_val)
 
-            # Train model
-            self.model.fit(X_scaled, y)
+            # Train model with early stopping
+            self.model.fit(
+                X_train_scaled, 
+                y_train,
+                eval_set=[(X_val_scaled, y_val)],
+                eval_metric='mse',
+                callbacks=[
+                    early_stopping(stopping_rounds=10),
+                    log_evaluation(period=1)  # Log mỗi iteration
+                ]
+            )
+            
             self.is_trained = True
+            self.best_iteration = self.model.best_iteration_
+
+            # Evaluate model
+            y_pred = self.model.predict(X_val_scaled)
+            
+            # Calculate metrics
+            mse = mean_squared_error(y_val, y_pred)
+            rmse = np.sqrt(mse)
+            r2 = r2_score(y_val, y_pred)
+            
+            # Log evaluation metrics
+            logger.info(f"Model evaluation metrics:")
+            logger.info(f"MSE: {mse:.4f}")
+            logger.info(f"RMSE: {rmse:.4f}")
+            logger.info(f"R2 score: {r2:.4f}")
             
             # Log feature importances
             importances = pd.DataFrame({
@@ -178,7 +199,8 @@ class WeatherPredictor:
                 'importance': self.model.feature_importances_
             }).sort_values('importance', ascending=False)
             
-            logger.info(f"Model trained with {len(df)} samples")
+            logger.info(f"Model trained with {len(X_train)} samples")
+            logger.info(f"Best iteration: {self.best_iteration}")
             logger.info("Feature importances:")
             for idx, row in importances.iterrows():
                 logger.info(f"{row['feature']}: {row['importance']:.4f}")
@@ -189,8 +211,8 @@ class WeatherPredictor:
     async def predict(self, current_data):
         """Predict next 3 hours"""
         try:
-            if not current_data:
-                logger.warning("No current data available for prediction")
+            if not current_data or not self.is_trained:
+                logger.warning("No current data available for prediction or model not trained")
                 return []
                 
             # Convert to DataFrame and add time features
@@ -219,8 +241,8 @@ class WeatherPredictor:
                 # Scale features
                 X_scaled = self.scaler.transform(X)
                 
-                # Predict
-                temp_pred = self.model.predict(X_scaled)[0]
+                # Predict using best iteration
+                temp_pred = self.model.predict(X_scaled, num_iteration=self.best_iteration)[0]
                 
                 # Create prediction
                 prediction = {
@@ -243,6 +265,44 @@ class WeatherPredictor:
             logger.error(f"Error in prediction: {e}")
             return []
 
+    async def save_predictions(self, predictions):
+        """Save predictions to the database"""
+        try:
+            async with self.session.post(
+                f"{self.db_api_url}/api/weather/predictions",
+                json=predictions
+            ) as response:
+                if response.status == 200:
+                    logger.info(f"Saved {len(predictions)} predictions")
+                else:
+                    logger.error(f"Error saving predictions: {await response.text()}")
+        except Exception as e:
+            logger.error(f"Error saving predictions: {e}")
+
+    async def start_redis_listener(self):
+        """Start listening for new data from Redis"""
+        try:
+            pubsub = self.redis.pubsub()
+            await pubsub.subscribe('weather_data')
+            
+            logger.info("Started Redis listener")
+            
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True)
+                if message:
+                    data = json.loads(message['data'])
+                    logger.info(f"Received new data: dt={datetime.fromtimestamp(data['dt'])}")
+                    
+                    # Predict with new data
+                    predictions = await self.predict([data])
+                    if predictions:
+                        await self.save_predictions(predictions)
+                
+                await asyncio.sleep(1)
+                
+        except Exception as e:
+            logger.error(f"Error in Redis listener: {e}")
+
     async def run(self):
         """Main prediction loop"""
         try:
@@ -251,96 +311,28 @@ class WeatherPredictor:
             # Initialize connections
             await self.connect()
             
-            # Train model only once at startup with historical data
-            logger.info("Collecting historical data for initial training...")
-            async with self.session.get(f"{self.db_api_url}/api/weather") as response:
-                if response.status == 200:
-                    initial_training_data = await response.json()
-                    initial_training_data = sorted(initial_training_data, key=lambda x: x['dt'])
-                    logger.info(f"Collected {len(initial_training_data)} historical records")
-                    
-                    # Train model
-                    await self.train_model(initial_training_data)
-                    logger.info("Initial model training completed")
-                    
-                    # Dự đoán ngay với dữ liệu cuối cùng
-                    latest_data = initial_training_data[-1]
-                    logger.info(f"Making initial predictions with latest data: dt={datetime.fromtimestamp(latest_data['dt'])}")
-                    predictions = await self.predict([latest_data])
-                    if predictions:
-                        async with self.session.post(
-                            f"{self.db_api_url}/api/weather/predictions",
-                            json=predictions
-                        ) as response:
-                            if response.status == 200:
-                                logger.info(f"Saved initial predictions")
-                            else:
-                                logger.error(f"Failed to save initial predictions: {response.status}")
-                else:
-                    logger.error("Failed to get historical data")
-                    return
-
-            while True:
-                # Nhận và xử lý dữ liệu từ Redis
-                if self.redis is None:
-                    self.redis = await aioredis.from_url(
-                        'redis://redis:6379',
-                        password=os.getenv('REDIS_PASSWORD')
-                    )
-                
-                pubsub = self.redis.pubsub()
-                await pubsub.subscribe('weather_data')
-                
-                # Đợi và xử lý tin nhắn trong 1 giờ
-                start_time = datetime.now()
-                while (datetime.now() - start_time).total_seconds() < 3600:  # 1 giờ = 3600 giây
-                    message = await pubsub.get_message(ignore_subscribe_messages=True)
-                    if message:
-                        data = json.loads(message['data'])
-                        logger.info(f"Received new data: dt={datetime.fromtimestamp(data['dt'])}")
-                        
-                        predictions = await self.predict([data])
-                        if predictions:
-                            formatted_predictions = []
-                            created_at = int(datetime.now().timestamp())
-                            
-                            for pred in predictions:
-                                formatted_predictions.append({
-                                    'dt': pred['dt'],
-                                    'temp': float(pred['temp']),
-                                    'hour': pred['hour'],
-                                    'day': pred['day'],
-                                    'month': pred['month'],
-                                    'year': pred['year'],
-                                    'created_at': created_at,
-                                    'formatted_time': pred['formatted_time'],
-                                    'prediction_hour': pred['prediction_hour']
-                                })
-                            
-                            async with self.session.post(
-                                f"{self.db_api_url}/api/weather/predictions",
-                                json=formatted_predictions
-                            ) as response:
-                                if response.status == 200:
-                                    logger.info(f"Saved predictions")
-                                else:
-                                    error_text = await response.text()
-                                    logger.error(f"Error saving predictions: {error_text}")
-                    
-                    await asyncio.sleep(1)
-                
-                # Đóng Redis connection sau mỗi giờ
-                await pubsub.unsubscribe('weather_data')
-                await self.redis.aclose()
-                self.redis = None
-                
-                # Chờ đến đầu giờ tiếp theo
-                current_time = datetime.now()
-                next_hour = current_time.replace(minute=10, second=0, microsecond=0) + timedelta(hours=1)
-                wait_seconds = (next_hour - current_time).total_seconds()
-                logger.info(f"Waiting {wait_seconds:.0f} seconds until next hour")
-                await asyncio.sleep(wait_seconds)
+            # Wait for initial data
+            await self.wait_for_initial_data()
             
+            # Collect historical data for initial training
+            historical_data = await self.get_weather_data()
+            if historical_data.empty:
+                logger.warning("No historical data available after initial load signal")
+                return
+            
+            logger.info(f"Collected {len(historical_data)} historical records")
+            
+            # Train model with historical data
+            await self.train_model(historical_data)
+            logger.info("Initial model training completed")
+            
+            # Start Redis listener to receive new data
+            await self.start_redis_listener()
+            
+            # Keep the service running
+            while True:
+                await asyncio.sleep(1)
+                
         except Exception as e:
             logger.error(f"Error in main loop: {e}")
         finally:

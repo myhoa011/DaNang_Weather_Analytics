@@ -1,15 +1,14 @@
 import os
-import pandas as pdYYY
-import numpy as np
+import pandas as pd
 import aiohttp
 import asyncio
-from typing import List, Dict
 from datetime import datetime
 from dotenv import load_dotenv
 from statsmodels.tsa.seasonal import seasonal_decompose
 from sklearn.preprocessing import StandardScaler
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from src.logger import logger
+import redis.asyncio as aioredis
+import json
 
 # Load environment variables
 load_dotenv()
@@ -22,20 +21,129 @@ class WeatherAnalysis:
         self.db_api_url = os.getenv('DB_API_URL')
         self.session = None
         self.scaler = StandardScaler()
-        self.scheduler = AsyncIOScheduler()
+        self.redis = None
 
     async def connect(self):
-        """Initialize HTTP session"""
+        """Initialize HTTP session and Redis connection"""
         if self.session is None:
             self.session = aiohttp.ClientSession()
+        if self.redis is None:
+            self.redis = await aioredis.from_url(
+                os.getenv('REDIS_URL'), 
+                password=os.getenv('REDIS_PASSWORD')
+                )
 
     async def close(self):
-        """Close HTTP session"""
+        """Close HTTP session and Redis connection"""
         if self.session:
             await self.session.close()
             self.session = None
+        if self.redis:
+            await self.redis.close()
+            self.redis = None
 
-    async def get_weather_data(self) -> pd.DataFrame:
+    async def wait_for_initial_data(self):
+        """Wait for initial data to be loaded in db"""
+        logger.info("Waiting for initial data load...")
+        while True:
+            try:
+                is_ready = await self.redis.get('db_initial_load_complete')
+                if is_ready:
+                    logger.info("Initial data is ready")
+                    return True
+                    
+                # Subscribe để nhận thông báo realtime
+                pubsub = self.redis.pubsub()
+                await pubsub.subscribe('db_status')
+                
+                async for message in pubsub.listen():
+                    if message['type'] == 'message':
+                        if message['data'] == b'initial_load_complete':
+                            logger.info("Received initial data ready signal")
+                            await pubsub.unsubscribe('db_status')
+                            return True
+                
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"Error waiting for initial data: {e}")
+                await asyncio.sleep(5)
+
+    async def get_weather_data(self):
+        """Get weather data from API"""
+        try:
+            async with self.session.get(f"{self.db_api_url}/api/weather") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    df = pd.DataFrame(data)
+                    df = df.sort_values('dt')
+                    logger.info(f"Retrieved {len(df)} weather records")
+                    return df
+                else:
+                    error = await response.text()
+                    raise Exception(f"API error: {response.status}, {error}")
+        except Exception as e:
+            logger.error(f"Error fetching data: {e}")
+            raise
+
+    async def analysis(self):
+        """Perform all analyses concurrently"""
+        try:       
+            # Run analyses concurrently
+            logger.info("Starting concurrent analyses...")
+            await asyncio.gather(
+                self.correlation(),
+                self.seasonal()
+            )
+            
+            logger.info("Completed all analyses")            
+        except Exception as e:
+            logger.error(f"Error in analysis: {e}")
+
+    async def start(self):
+        """Start the Weather Data Analysis service"""
+        try:
+            logger.info("Starting Weather Data Analysis service")
+            
+            # Initialize connections
+            await self.connect()
+            
+            # Wait for initial data
+            await self.wait_for_initial_data()
+            
+            # Kiểm tra dữ liệu thực sự có sẵn
+            df = await self.get_weather_data()
+            if df.empty:
+                logger.warning("No data available after initial load signal")
+                return  # Hoặc xử lý theo cách khác nếu không có dữ liệu
+            
+            # Perform initial analysis
+            await self.analysis()
+            
+            await self.start_redis_listener()
+
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except KeyboardInterrupt:
+                await self.stop()
+            
+        except Exception as e:
+            logger.error(f"Error starting service: {e}")
+            await self.stop()
+            raise
+
+    async def stop(self):
+        """Stop the service"""
+        try:
+            if self.scheduler:
+                self.scheduler.shutdown()
+            await self.close()
+            logger.info("Weather Data Analysis service stopped")
+        except Exception as e:
+            logger.error(f"Error stopping service: {e}") 
+    
+    #correlation
+    async def get_correlation_data(self) -> pd.DataFrame:
         """
         Fetch weather data from db_api
         
@@ -49,65 +157,43 @@ class WeatherAnalysis:
                 'Content-Type': 'application/json',
                 'Accept': 'application/json'
             }
-            async with self.session.get(f"{self.db_api_url}/api/weather", headers=headers) as response:
+            async with self.session.get(f"{self.db_api_url}/correlation", headers=headers) as response:
                 if response.status == 200:
                     data = await response.json()
                     df = pd.DataFrame(data)
-                    df = df.sort_values('dt')
-                    logger.info(f"Retrieved {len(df)} weather records")
+                    logger.info(f"Retrieved {len(df)} correlation records")
                     return df
                 else:
                     error = await response.text()
                     raise Exception(f"API error: {response.status}, {error}")
         except Exception as e:
-            logger.error(f"Error fetching data: {e}")
-            raise
-    #call 60m/turn
-    async def analysis(self):
-        await self.corelation()
-        await self.seasonal()
+            logger.error(f"Error fetching correlation data: {e}")
+            return pd.DataFrame()
 
-    async def start(self):
-        """Start the Weather Data Analysis service"""
+    async def clear_correlation_data(self):
+        """Clear existing correlation data"""
         try:
-            logger.info("Starting Weather Data Analysis service")
-            
-            # Initialize connections
-            await self.connect()
-            
-            # Thực hiện phân tích lần đầu
-            await self.analysis()
-            
-            # Schedule chạy mỗi giờ
-            self.scheduler.add_job(
-                self.analysis,
-                'interval',
-                minutes=60,
-                id='weather_data_analyst'
-            )
-            
-            self.scheduler.start()
+            if self.session is None:
+                await self.connect()
+                
+            # Gửi dữ liệu lên API
+            headers = {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }    
 
-            try:
-                while True:
-                    await asyncio.sleep(1)
-            except KeyboardInterrupt:
-                await self.stop()
-
+            # Gửi API DELETE để xóa dữ liệu cũ
+            async with self.session.delete(f"{self.db_api_url}/api/correlation/delete", headers=headers) as response:
+                if response.status == 200:
+                    logger.info("Cleared existing correlation data")
+                else:
+                    error = await response.text()
+                    logger.error(f"API DELETE error: {error}")
+                    raise Exception(f"API error: {response.status}, {error}")
         except Exception as e:
-            logger.error(f"Error starting service: {e}")
-            await self.stop()
-
-    async def stop(self):
-        try:
-            self.scheduler.shutdown()
-            if self.session:
-                await self.session.close()
-            logger.info("Weather Data Analysis service stopped")
-        except Exception as e:
-            logger.error(f"Error stopping service: {e}")
-
-    async def corelation(self):
+            logger.error(f"Error clearing correlation data: {e}")
+     
+    async def correlation(self):
         try:
             # Lấy dữ liệu thời tiết
             df = await self.get_weather_data()
@@ -129,7 +215,7 @@ class WeatherAnalysis:
             data_correlation_old = await self.get_correlation_data()
             
             if not data_correlation_old.empty:
-                await self.clear_data()
+                await self.clear_correlation_data()
 
             if self.session is None:
                 await self.connect()
@@ -147,7 +233,7 @@ class WeatherAnalysis:
             ) as response:
                 if response.status == 200:
                     result = await response.json()
-                    logger.info(f"API response: {result}")
+                    logger.info(f"Received response: {result}")
                     return correlation_matrix
                 else:
                     error = await response.text()
@@ -188,7 +274,7 @@ class WeatherAnalysis:
             logger.error(f"Error fetching data: {e}")
             raise
     
-    async def clear_data_seasonal(self):
+    async def clear_seasonal_data(self):
         try:
             if self.session is None:
                 await self.connect()
@@ -231,7 +317,7 @@ class WeatherAnalysis:
             ##bắt đầu xử lý
             #temp
             # Phân tích Seasonal Decomposition
-            result_temp = seasonal_decompose(df['temp'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_temp = seasonal_decompose(df['temp'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             
             # Tạo DataFrame từ các thành phần của result
             temp_df = pd.DataFrame({
@@ -243,7 +329,7 @@ class WeatherAnalysis:
             })
             
             #pressure
-            result_pressure = seasonal_decompose(df['pressure'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_pressure = seasonal_decompose(df['pressure'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             # Tạo DataFrame từ các thành phần của result
             pressure_df = pd.DataFrame({
                 'dt': df['dt'], 
@@ -254,7 +340,7 @@ class WeatherAnalysis:
             })
             
             #humidity
-            result_humidity = seasonal_decompose(df['humidity'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_humidity = seasonal_decompose(df['humidity'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             # Tạo DataFrame từ các thành phần của result
             humidity_df = pd.DataFrame({
                 'dt': df['dt'], 
@@ -265,7 +351,7 @@ class WeatherAnalysis:
             })
             
             #clouds
-            result_clouds = seasonal_decompose(df['clouds'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_clouds = seasonal_decompose(df['clouds'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             # Tạo DataFrame từ các thành phần của result
             clouds_df = pd.DataFrame({
                 'dt': df['dt'], 
@@ -276,7 +362,7 @@ class WeatherAnalysis:
             })
 
             #visibility
-            result_visibility = seasonal_decompose(df['visibility'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_visibility = seasonal_decompose(df['visibility'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             # Tạo DataFrame từ các thành phần của result
             visibility_df = pd.DataFrame({
                 'dt': df['dt'], 
@@ -287,7 +373,7 @@ class WeatherAnalysis:
             })
 
             #wind_speed
-            result_wind_speed = seasonal_decompose(df['wind_speed'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_wind_speed = seasonal_decompose(df['wind_speed'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             # Tạo DataFrame từ các thành phần của result
             wind_speed_df = pd.DataFrame({
                 'dt': df['dt'], 
@@ -298,7 +384,7 @@ class WeatherAnalysis:
             })
 
             #wind_deg
-            result_wind_deg = seasonal_decompose(df['wind_deg'], model='additive', period=12)  # period có thể điều chỉnh phù hợp
+            result_wind_deg = seasonal_decompose(df['wind_deg'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
             
             # Tạo DataFrame từ các thành phần của result
             wind_deg_df = pd.DataFrame({
@@ -319,12 +405,10 @@ class WeatherAnalysis:
             # Chuyển DataFrame thành danh sách dict để gửi API
             seasonal_data = seasonal_df.to_dict('records')
             
-            logger.info(f"Seasonal data: {seasonal_data}")
-            
             data_seasonal_old = await self.get_seasonal_data()
             
             if not data_seasonal_old.empty:
-                await self.clear_data_seasonal()
+                await self.clear_seasonal_data()
 
             if self.session is None:
                 await self.connect()
@@ -349,6 +433,48 @@ class WeatherAnalysis:
         except Exception as e:
             logger.exception(f"error calculating seasonal decomposition: {e}")
             raise
+
+    async def start_redis_listener(self):
+        """Start listening for new weather data"""
+        try:
+            pubsub = self.redis.pubsub()
+            await pubsub.subscribe('weather_data')
+            
+            logger.info("Started Redis listener for new weather data")
+            
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True)
+                if message:
+                    try:
+                        # Parse new data
+                        data = json.loads(message['data'])
+                        current_time = datetime.fromtimestamp(data['dt'])
+                        logger.info(f"Received new weather data at {current_time}")
+                        
+                        # Get latest data including new record
+                        df = await self.get_weather_data()
+                        if not df.empty:
+                            # Run analyses concurrently with new data
+                            await asyncio.gather(
+                                self.correlation_analysis(df),
+                                self.seasonal_analysis(df)
+                            )
+                            logger.info("Completed analyses with new data")
+                        else:
+                            logger.warning("No data available for analysis")
+                            
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Error decoding message: {e}")
+                    except Exception as e:
+                        logger.error(f"Error processing new data: {e}")
+                
+                await asyncio.sleep(1)
+                
+        except Exception as e:
+            logger.error(f"Error in Redis listener: {e}")
+            # Attempt to reconnect
+            await asyncio.sleep(5)
+            await self.start_redis_listener()
 
 async def main():
     service = WeatherAnalysis()

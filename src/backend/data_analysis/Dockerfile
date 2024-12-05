@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir \
     statsmodels==0.14.4 \
     loguru==0.7.2 \
     yacs==0.1.8 \
-    APScheduler==3.10.1
+    redis==5.2.0
 
 # Copy shared modules
 COPY logger.py /app/src/

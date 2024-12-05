@@ -10,7 +10,8 @@ RUN pip install --no-cache-dir \
     aiofiles==23.2.1 \
     loguru==0.7.2 \
     PyYAML==6.0.2 \
-    yacs==0.1.8
+    yacs==0.1.8 \
+    filelock==3.16.1
 
 # Copy shared modules
 COPY config.py /app/src/

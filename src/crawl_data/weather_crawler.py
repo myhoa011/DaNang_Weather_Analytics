@@ -8,6 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import aiofiles
 import sys
+from filelock import FileLock
 
 sys.path.append(".")
 from src.logger import logger
@@ -78,50 +79,53 @@ class WeatherCrawler:
     async def save_weather_data(self, data):
         """Save raw weather data to JSON file"""
         backup_file = None
+        lock = FileLock(f"{self.data_file}.lock")
+        
         try:
-            # Load existing data
-            weather_data = await self.load_weather_data()
-            
-            # Check duplicate before saving
-            new_timestamp = data['data'][0]['dt']
-            exists = any(
-                entry.get('data', [{}])[0].get('dt') == new_timestamp 
-                for entry in weather_data
-            )
-            
-            if exists:
-                logger.info(f"Data for timestamp {new_timestamp} already exists, skipping save...")
+            with lock:
+                # Load existing data
+                weather_data = await self.load_weather_data()
+                
+                # Check duplicate before saving
+                new_timestamp = data['data'][0]['dt']
+                exists = any(
+                    entry.get('data', [{}])[0].get('dt') == new_timestamp 
+                    for entry in weather_data
+                )
+                
+                if exists:
+                    logger.info(f"Data for timestamp {new_timestamp} already exists, skipping save...")
+                    return True
+                
+                # Create backup before saving new data
+                if os.path.exists(self.data_file):
+                    backup_file = f"{self.data_file}.bak"
+                    async with aiofiles.open(self.data_file, 'r') as src, \
+                              aiofiles.open(backup_file, 'w') as dst:
+                        content = await src.read()
+                        await dst.write(content)
+                
+                # Add new data and sort by timestamp
+                weather_data.append(data)
+                weather_data.sort(key=lambda x: x['data'][0]['dt'])
+                
+                # Save to file
+                async with aiofiles.open(self.data_file, 'w') as file:
+                    await file.write(json.dumps(weather_data, indent=4))
+                
+                # Remove backup if save successful    
+                if backup_file and os.path.exists(backup_file):
+                    os.remove(backup_file)
+                
+                logger.info(f"Successfully saved new data. Total records: {len(weather_data)}")
                 return True
-            
-            # Create backup before saving new data
-            if os.path.exists(self.data_file):
-                backup_file = f"{self.data_file}.bak"
-                async with aiofiles.open(self.data_file, 'r') as src, \
-                          aiofiles.open(backup_file, 'w') as dst:
-                    content = await src.read()
-                    await dst.write(content)
-            
-            # Add new data and sort by timestamp
-            weather_data.append(data)
-            weather_data.sort(key=lambda x: x['data'][0]['dt'])
-            
-            # Save to file
-            async with aiofiles.open(self.data_file, 'w') as file:
-                await file.write(json.dumps(weather_data, indent=4))
-            
-            # Remove backup if save successful    
-            if os.path.exists(backup_file):
-                os.remove(backup_file)
-            
-            logger.info(f"Successfully saved new data. Total records: {len(weather_data)}")
-            return True
-            
+                
         except Exception as e:
             logger.error(f"Error saving weather data: {e}")
-            # Restore from backup if available
-            if os.path.exists(backup_file):
+            # Restore from backup if save failed
+            if backup_file and os.path.exists(backup_file):
                 os.replace(backup_file, self.data_file)
-                logger.info("Restored data from backup")
+                logger.info("Restored from backup file")
             return False
 
     async def init_session(self):

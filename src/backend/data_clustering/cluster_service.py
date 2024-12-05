@@ -6,13 +6,10 @@ import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from fastapi import HTTPException
 from dotenv import load_dotenv
 from src.logger import logger
-from aiohttp import ClientSession, ClientResponseError, ServerDisconnectedError
 import os
 from typing import List, Dict, Any, Tuple
-from src.backend.data_clustering.weather_model import ClusterData
 
 load_dotenv()
 
@@ -27,8 +24,8 @@ class WeatherCluster:
         self.session = None
         self.scaler = StandardScaler()
         self.kmeans_model = KMeans(n_clusters=4, random_state=42)
-        self.temperature_model = RandomForestRegressor(n_estimators=100, random_state=42)  # Mô hình hồi quy
-        self.season_model = RandomForestClassifier(n_estimators=100, random_state=42)  # Mô hình phân loại mùa
+        self.temperature_model = RandomForestRegressor(n_estimators=100, random_state=42)
+        self.season_model = RandomForestClassifier(n_estimators=100, random_state=42)
         self.features = ["temp", "pressure", "humidity", "clouds", "visibility", "wind_speed", "wind_deg"]
 
     async def connect(self):
@@ -42,11 +39,6 @@ class WeatherCluster:
     async def get_weather_data(self) -> pd.DataFrame:
         try:
             await self.connect()
-            
-            # Logging statements
-            logger.info(f"Session: {self.session}")
-            logger.info(f"Session.get type: {type(self.session.get)}")
-
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "application/json",
@@ -57,81 +49,15 @@ class WeatherCluster:
                     data = await response.json()
                     if not data:
                         logger.warning("No weather data retrieved.")
-                        raise HTTPException(status_code=204, detail="No content retrieved from API.")
+                        raise Exception("No content retrieved from API.")
                     df = pd.DataFrame(data)
                     logger.info(f"Retrieved {len(df)} weather records.")
                     return df
                 else:
                     error = await response.text()
-                    raise HTTPException(status_code=response.status, detail=f"API error: {error}")
+                    raise Exception(f"API error: {error}")
         except Exception as e:
             logger.error(f"Error fetching data: {e}")
-            raise HTTPException(status_code=500, detail="Error fetching weather data.")
-        # finally:
-        #     await self.close()
-
-    async def get_all_data_cluster(self) -> pd.DataFrame:
-        try:
-            await self.connect()
-            # Logging statements
-            logger.info(f"Session: {self.session}")
-            logger.info(f"Session.get type: {type(self.session.get)}")
-
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
-            async with self.session.get(f"{self.db_api_url}/api/data_cluster", headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if not data:
-                        logger.warning("No cluster data retrieved.")
-                        raise HTTPException(status_code=204, detail="No content retrieved from API.")
-                    df = pd.DataFrame(data)
-                    logger.info(f"Retrieved {len(df)} cluster records.")
-                    columns = ['date', 'temp', 'custom_label']
-                    if columns:
-                        missing_columns = [col for col in columns if col not in df.columns]
-                        if missing_columns:
-                            logger.warning(f"Missing columns in API response: {missing_columns}")
-                        df = df[columns]
-                    return df
-                else:
-                    error = await response.text()
-                    raise HTTPException(status_code=response.status, detail=f"API error: {error}")
-        except Exception as e:
-            logger.error(f"Error fetching data: {e}")
-            raise HTTPException(status_code=500, detail="Error fetching cluster data.")
-        finally:
-            await self.close()
-
-    async def get_centroids(self) -> pd.DataFrame:
-        """
-        Fetch centroid data from the API and return it as a pandas DataFrame.
-        """
-        try:
-            await self.connect()
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
-            url = f"{self.db_api_url}/api/get_centroids"
-            async with self.session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if not data:
-                        logger.warning("No centroid data retrieved.")
-                        raise ValueError("No centroid data retrieved.")
-                    df = pd.DataFrame(data)
-                    logger.info(f"Retrieved {len(df)} centroid records.")
-                    return df
-                else:
-                    error_text = await response.text()
-                    error_msg = f"API error {response.status}: {error_text}"
-                    logger.error(error_msg)
-                    raise Exception(error_msg)
-        except Exception as e:
-            logger.exception(f"Error fetching centroids: {e}")
             raise
         finally:
             await self.close()
@@ -164,7 +90,7 @@ class WeatherCluster:
             return df
         except Exception as e:
             logger.error(f"Error processing data: {e}")
-            raise HTTPException(status_code=500, detail="Error processing weather data.")
+            raise
 
     def cluster_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
@@ -197,7 +123,7 @@ class WeatherCluster:
             return df, centroid_df
         except Exception as e:
             logger.error(f"Error clustering data: {e}")
-            raise HTTPException(status_code=500, detail="Error clustering weather data.")
+            raise
 
     def customize_labels(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -232,7 +158,7 @@ class WeatherCluster:
             return df
         except Exception as e:
             logger.error(f"Error customizing labels: {e}")
-            raise HTTPException(status_code=500, detail="Error customizing labels.")
+            raise
 
     def plot_temperature(self, df: pd.DataFrame):
         """
@@ -329,12 +255,12 @@ class WeatherCluster:
 
             # Thêm dữ liệu mới
             insert_url = f"{self.db_api_url}/api/cluster_data/bulk"
-            insert_headers = {
+            headers = {
                 'Content-Type': 'application/json',
                 'Accept': 'application/json'
             }
 
-            async with self.session.post(insert_url, json=cluster_data, headers=insert_headers) as insert_response:
+            async with self.session.post(insert_url, json=cluster_data, headers=headers) as insert_response:
                 if insert_response.status == 200:
                     result = await insert_response.json()
                     logger.info(f"Successfully saved {result['count']} cluster data.")
@@ -384,7 +310,7 @@ class WeatherCluster:
             return serialized_data
         except Exception as e:
             logger.error(f"Error serializing cluster data: {e}")
-            raise HTTPException(status_code=500, detail="Error serializing cluster data.")
+            raise
 
     @staticmethod
     def serialize_centroids(centroids: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -410,7 +336,7 @@ class WeatherCluster:
             return serialized_data
         except Exception as e:
             logger.error(f"Error serializing centroids: {e}")
-            raise HTTPException(status_code=500, detail="Error serializing centroids.")
+            raise
 
 async def main():
     """
@@ -426,7 +352,7 @@ async def main():
         weather_data = await cluster.get_weather_data()
 
         # Step 2: Process data
-        processed_data = await cluster.process_data(weather_data)
+        processed_data = cluster.process_data(weather_data)
 
         # Step 3: Perform clustering
         clustered_data, centroids = cluster.cluster_data(processed_data)
@@ -438,10 +364,10 @@ async def main():
         cluster.plot_temperature(processed_data)
 
         # Step 5: Serialize and save centroids
-        centroids_serialized =  cluster.serialize_centroids(centroids.to_dict("records"))
+        centroids_serialized = cluster.serialize_centroids(centroids.to_dict("records"))
         success = await cluster.save_centroids(centroids_serialized)
         if success:
-            logger.info("centroids saved successfully.")
+            logger.info("Centroids saved successfully.")
         else:
             logger.error("Failed to save centroids to database.")
 
@@ -456,7 +382,6 @@ async def main():
             logger.error("Failed to save clustered data to database.")
     finally:
         await cluster.close()
-
 
 if __name__ == "__main__":
     asyncio.run(main())

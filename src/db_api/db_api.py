@@ -1,21 +1,23 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any
 import aiomysql
 import os
 from dotenv import load_dotenv
-from contextlib import asynccontextmanager
-import time
 import asyncio
 from datetime import datetime
 import redis.asyncio as aioredis
 import json
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.row_event import WriteRowsEvent
+import pandas as pd
 
 from src.logger import logger
 from .weather import WeatherData
 from .correlationModel import CorrelationRecord
 from .seasonalModel import SeasonalRecord
+from .cluster import ClusterData
+from .centroid import Centroid
 
 # Load environment variables
 load_dotenv()
@@ -185,19 +187,24 @@ class WeatherAPI:
     async def process_binlog_queue(self):
         """Process events from binlog queue"""
         initial_events = []
-        expected_records = 16728
+        redis = await aioredis.from_url('redis://redis:6379', password=os.getenv('REDIS_PASSWORD'))
 
-        while True:
-            try:
+        try:
+            while True:
                 event = await self.binlog_queue.get()
                 
                 if self.is_initial_load:
                     initial_events.extend(event.rows)
                     logger.info(f"Added to initial load buffer. Current size: {len(initial_events)}")
                     
-                    if len(initial_events) >= expected_records:
+                    if len(initial_events) >= 34400:
                         logger.info(f"Initial load complete with {len(initial_events)} rows")
                         self.is_initial_load = False
+                        
+                        # Gửi signal qua Redis
+                        await redis.set('db_initial_load_complete', '1')
+                        await redis.publish('db_status', 'initial_load_complete')
+                        
                         # Process all initial events
                         for row in initial_events:
                             await self.process_weather_event(row['values'], is_initial=True)
@@ -206,12 +213,13 @@ class WeatherAPI:
                     # Process normal binlog event
                     for row in event.rows:
                         await self.process_weather_event(row['values'], is_initial=False)
-                    
+                
                 self.binlog_queue.task_done()
                 
-            except Exception as e:
-                logger.error(f"Error processing binlog event: {e}")
-                await asyncio.sleep(1)
+        except Exception as e:
+            logger.error(f"Error processing binlog event: {e}")
+        finally:
+            await redis.close()
 
     async def process_weather_event(self, values, is_initial=False):
         """Process a weather event"""
@@ -276,6 +284,22 @@ async def shutdown():
     """Close database connection on shutdown"""
     if weather_api:
         await weather_api.close_pool()
+
+@app.get("/health")
+async def health_check():
+    try:
+        # Kiểm tra kết nối MySQL
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT 1")
+                await cur.fetchone()
+        
+        # Kiểm tra kết nối Redis
+        await weather_api.redis.ping()
+        
+        return {"status": "healthy"}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 @app.post("/api/weather/bulk")
 async def insert_weather_bulk(raw_data_list: List[WeatherData], processed_data_list: List[WeatherData]):
@@ -680,22 +704,20 @@ async def save_correlation_bulk(data: List[CorrelationRecord]) -> Dict[str, Any]
 
 ##get data Correlation
 @app.get("/correlation")
-async def get_filer() -> List[Dict[str, Any]]:  
+async def get_correlation_data():
     try:
         async with weather_api.pool.acquire() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                query = "SELECT * FROM correlation_table"
-                await cur.execute(query)
-                results = await cur.fetchall()
-        
-        # Chuyển đổi dữ liệu sang DataFrame
-        df = pd.DataFrame(results)
-         
-        result = df.to_dict(orient='records')   
-        return result
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT * FROM correlation_table")
+                rows = await cur.fetchall()
+                if rows:
+                    df = pd.DataFrame(rows)
+                    logger.info(f"Retrieved {len(df)} correlation records")
+                    return df.to_dict('records')
+                return []
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))  
-    
+        logger.error(f"Error getting correlation data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 ##SEASONAL
 @app.post("/api/seasonal/bulk")
@@ -867,8 +889,7 @@ async def save_cluster_data_bulk(cluster_data: List[ClusterData]) -> Dict[str, A
                         continue
 
         return {
-            "count": total_saved,
-            "message": "Clustered weather data saved successfully"
+            "count": total_saved
         }
 
     except Exception as e:
@@ -990,3 +1011,78 @@ async def get_centroid():
     
 
 # ====================================================================
+
+@app.get("/api/prediction_chart")
+async def get_prediction_chart_data() -> Dict[str, Any]:
+    """
+    Lấy dữ liệu nhiệt độ cho biểu đồ:
+    - 9 giờ historical data từ processed_weather_data
+    - 3 giờ predicted data từ predictions
+    """
+    try:
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                # Query lấy 9 giờ dữ liệu historical gần nhất
+                historical_query = """
+                    SELECT 
+                        dt,
+                        temp - 273.15 as temp,
+                        FROM_UNIXTIME(dt) as formatted_time
+                    FROM processed_weather_data
+                    ORDER BY dt DESC
+                    LIMIT 9;
+                """
+                await cur.execute(historical_query)
+                historical_results = await cur.fetchall()
+
+                # Query lấy 3 giờ dự đoán tiếp theo
+                prediction_query = """
+                    SELECT 
+                        dt,
+                        temp - 273.15 as temp,
+                        formatted_time,
+                        prediction_hour
+                    FROM predictions 
+                    WHERE prediction_hour <= 3
+                    ORDER BY dt ASC, prediction_hour ASC
+                    LIMIT 3;
+                """
+                await cur.execute(prediction_query)
+                prediction_results = await cur.fetchall()
+
+        # Chuyển đổi kết quả thành list of dicts
+        historical_data = [
+            {
+                "timestamp": row["dt"],
+                "temperature": round(float(row["temp"]), 2),
+                "time": row["formatted_time"].strftime("%Y-%m-%d %H:%M:%S"),
+                "type": "historical"
+            }
+            for row in historical_results
+        ]
+        # Sắp xếp theo thời gian tăng dần
+        historical_data.sort(key=lambda x: x["timestamp"])
+
+        prediction_data = [
+            {
+                "timestamp": row["dt"],
+                "temperature": round(float(row["temp"]), 2),
+                "time": row["formatted_time"],
+                "type": "predicted",
+                "hour": row["prediction_hour"]
+            }
+            for row in prediction_results
+        ]
+
+        return {
+            "status": "success",
+            "data": {
+                "historical": historical_data,
+                "prediction": prediction_data
+            },
+            "message": f"Retrieved {len(historical_data)} historical and {len(prediction_data)} prediction records"
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting temperature chart data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
