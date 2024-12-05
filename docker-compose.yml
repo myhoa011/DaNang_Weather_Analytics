@@ -29,10 +29,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ./src/mysql/init_db:/docker-entrypoint-initdb.d
-      - type: bind
-        source: ./src/mysql/config/mysql.cnf
-        target: /etc/mysql/conf.d/mysql.cnf
-        read_only: true
+      - ./src/mysql/config/mysql.cnf:/etc/mysql/conf.d/mysql.cnf
     networks:
       - data_mining_network
     healthcheck:

@@ -456,8 +456,8 @@ class WeatherAnalysis:
                         if not df.empty:
                             # Run analyses concurrently with new data
                             await asyncio.gather(
-                                self.correlation_analysis(df),
-                                self.seasonal_analysis(df)
+                                self.correlation(),
+                                self.seasonal()
                             )
                             logger.info("Completed analyses with new data")
                         else:
