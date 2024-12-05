@@ -127,21 +127,21 @@ services:
       - data_mining_network
     env_file:
       - ./.env
-  # data_clustering:
-  #   container_name: data_clustering_server
-  #   restart: always
-  #   build:
-  #     context: src
-  #     dockerfile: backend/data_clustering/Dockerfile
-  #   volumes:
-  #     - ./logs:/app/logs
-  #     - ./configs:/app/configs
-  #   depends_on:
-  #     - db_api
-  #   networks:
-  #     - data_mining_network
-  #   env_file:
-  #     - ./.env
+  data_clustering:
+    container_name: data_clustering_server
+    restart: always
+    build:
+      context: src
+      dockerfile: backend/data_clustering/Dockerfile
+    volumes:
+      - ./logs:/app/logs
+      - ./configs:/app/configs
+    depends_on:
+      - db_api
+    networks:
+      - data_mining_network
+    env_file:
+      - ./.env
 networks:
   data_mining_network:
     driver: bridge

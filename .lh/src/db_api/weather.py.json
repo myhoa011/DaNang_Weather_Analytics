@@ -1,0 +1,26 @@
+{
+    "sourceFile": "src/db_api/weather.py",
+    "activeCommit": 0,
+    "commits": [
+        {
+            "activePatchIndex": 2,
+            "patches": [
+                {
+                    "date": 1733386784761,
+                    "content": "Index: \n===================================================================\n--- \n+++ \n"
+                },
+                {
+                    "date": 1733409982481,
+                    "content": "Index: \n===================================================================\n--- \n+++ \n@@ -0,0 +1,45 @@\n+from pydantic import BaseModel\n+from typing import Optional\n+from datetime import datetime\n+\n+class WeatherData(BaseModel):\n+    dt: int\n+    temp: float  \n+    pressure: int\n+    humidity: int\n+    clouds: int\n+    visibility: Optional[int]\n+    wind_speed: float\n+    wind_deg: int\n+\n+    def get_formatted_time(self) -> str:\n+        return datetime.fromtimestamp(self.dt).strftime(\"%Y-%m-%d %H:%M:%S\")\n+    \n+    @classmethod\n+    def from_raw_data(cls, raw_data: dict) -> 'WeatherData':\n+        return cls(\n+            dt=raw_data.get(\"dt\"),\n+            temp=raw_data.get(\"temp\"),\n+            pressure=raw_data.get(\"pressure\"), \n+            humidity=raw_data.get(\"humidity\"),\n+            clouds=raw_data.get(\"clouds\"),\n+            visibility=raw_data.get(\"visibility\"),  \n+            wind_speed=raw_data.get(\"wind_speed\"),\n+            wind_deg=raw_data.get(\"wind_deg\")\n+        )\n+        \n+class Centroid(BaseModel):\n+    cluster_name: str\n+    scaled_temp: float\n+    temp: float\n+\n+class Temp_pred (BaseModel):\n+    temp_predict: float\n+    date: datetime\n+\n+class Spider (BaseModel):\n+    season: str\n+    days: int\n+    year: int\n+\n+    \n\\ No newline at end of file\n"
+                },
+                {
+                    "date": 1733410855460,
+                    "content": "Index: \n===================================================================\n--- \n+++ \n@@ -41,45 +41,5 @@\n     season: str\n     days: int\n     year: int\n \n-    \n-from pydantic import BaseModel\r\n-from typing import Optional\r\n-from datetime import datetime\r\n-\r\n-class WeatherData(BaseModel):\r\n-    dt: int\r\n-    temp: float  \r\n-    pressure: int\r\n-    humidity: int\r\n-    clouds: int\r\n-    visibility: Optional[int]\r\n-    wind_speed: float\r\n-    wind_deg: int\r\n-\r\n-    def get_formatted_time(self) -> str:\r\n-        return datetime.fromtimestamp(self.dt).strftime(\"%Y-%m-%d %H:%M:%S\")\r\n-    \r\n-    @classmethod\r\n-    def from_raw_data(cls, raw_data: dict) -> 'WeatherData':\r\n-        return cls(\r\n-            dt=raw_data.get(\"dt\"),\r\n-            temp=raw_data.get(\"temp\"),\r\n-            pressure=raw_data.get(\"pressure\"), \r\n-            humidity=raw_data.get(\"humidity\"),\r\n-            clouds=raw_data.get(\"clouds\"),\r\n-            visibility=raw_data.get(\"visibility\"),  \r\n-            wind_speed=raw_data.get(\"wind_speed\"),\r\n-            wind_deg=raw_data.get(\"wind_deg\")\r\n-        )\r\n-        \r\n-class Centroid(BaseModel):\r\n-    cluster_name: str\r\n-    scaled_temp: float\r\n-    temp: float\r\n-\r\n-class Temp_pred (BaseModel):\r\n-    temp_predict: float\r\n-    prediction_date: int\r\n-    date: datetime\r\n     \n\\ No newline at end of file\n"
+                }
+            ],
+            "date": 1733386784761,
+            "name": "Commit-0",
+            "content": "from pydantic import BaseModel\r\nfrom typing import Optional\r\nfrom datetime import datetime\r\n\r\nclass WeatherData(BaseModel):\r\n    dt: int\r\n    temp: float  \r\n    pressure: int\r\n    humidity: int\r\n    clouds: int\r\n    visibility: Optional[int]\r\n    wind_speed: float\r\n    wind_deg: int\r\n\r\n    def get_formatted_time(self) -> str:\r\n        return datetime.fromtimestamp(self.dt).strftime(\"%Y-%m-%d %H:%M:%S\")\r\n    \r\n    @classmethod\r\n    def from_raw_data(cls, raw_data: dict) -> 'WeatherData':\r\n        return cls(\r\n            dt=raw_data.get(\"dt\"),\r\n            temp=raw_data.get(\"temp\"),\r\n            pressure=raw_data.get(\"pressure\"), \r\n            humidity=raw_data.get(\"humidity\"),\r\n            clouds=raw_data.get(\"clouds\"),\r\n            visibility=raw_data.get(\"visibility\"),  \r\n            wind_speed=raw_data.get(\"wind_speed\"),\r\n            wind_deg=raw_data.get(\"wind_deg\")\r\n        )\r\n        \r\nclass Centroid(BaseModel):\r\n    cluster_name: str\r\n    scaled_temp: float\r\n    temp: float\r\n\r\nclass Temp_pred (BaseModel):\r\n    temp_predict: float\r\n    prediction_date: int\r\n    date: datetime\r\n    "
+        }
+    ]
+}
