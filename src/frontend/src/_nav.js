@@ -38,11 +38,6 @@ const _nav = [
       },
       {
         component: CNavItem,
-        name: `Predict season for day`,
-        to: '/predict-season-for-day',
-      },
-      {
-        component: CNavItem,
         name: `Spider chart`,
         to: '/spider-chart',
       },
