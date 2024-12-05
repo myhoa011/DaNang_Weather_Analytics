@@ -1,14 +1,12 @@
 import os
 import sys
 import json
-import time
-from datetime import datetime
 import aiohttp
 import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import aiofiles
-import numpy as np
 import pandas as pd
+from filelock import FileLock
 from dotenv import load_dotenv
 
 sys.path.append(".")
@@ -18,9 +16,9 @@ from src.logger import logger
 load_dotenv()
 
 class DataIngestion:
-    def __init__(self, api_url):
-        """Initialize DataIngestion with Database API URL"""
-        self.api_url = api_url
+    def __init__(self):
+        """Initialize DataIngestion"""
+        self.api_url = os.getenv('DB_API_URL')
         self.scheduler = AsyncIOScheduler()
         self.data_path = os.getenv('DATA_PATH', 'data')
         self.data_file = f"{self.data_path}/weather_data.json"
@@ -39,18 +37,31 @@ class DataIngestion:
                 json.dump({"last_processed_dt": 0}, f)
 
     async def load_weather_data(self):
-        if not os.path.exists(self.data_file):
-            return None
-
+        """Load weather data from file"""
+        lock = FileLock(f"{self.data_file}.lock")
+        
         try:
-            async with aiofiles.open(self.data_file, "r") as file:
-                content = await file.read()
-                data = json.loads(content)
-                return data if data else None
-                
+            with lock:
+                if not os.path.exists(self.data_file):
+                    logger.warning(f"Data file {self.data_file} not found")
+                    return []
+
+                async with aiofiles.open(self.data_file, 'r', encoding='utf-8') as f:
+                    content = await f.read()
+                    if not content:
+                        logger.warning("Data file is empty")
+                        return []
+                        
+                    data = json.loads(content)
+                    logger.info(f"Loaded {len(data)} weather records")
+                    return data
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON format: {e}")
+            return []
         except Exception as e:
             logger.error(f"Error loading weather data: {e}")
-            return None
+            return []
 
     @staticmethod
     def convert_to_vietnam_time(utc_timestamp: int) -> int:
@@ -160,16 +171,13 @@ class DataIngestion:
             raise
 
     async def send_to_api(self, raw_data_list: list, processed_data_list: list):
+        """Send bulk data to API"""
         if self.session is None:
             self.session = aiohttp.ClientSession()
 
         try:
             if not self.api_url:
                 raise ValueError("API URL is not set")
-
-            base_url = self.api_url.rstrip('/')
-            raw_url = f"{base_url}/api/raw_weather/bulk"
-            processed_url = f"{base_url}/api/process_weather/bulk"
 
             headers = {
                 'Content-Type': 'application/json',
@@ -178,37 +186,22 @@ class DataIngestion:
 
             logger.info(f"Sending bulk data with {len(raw_data_list)} entries")
 
-            # Send bulk data
-            raw_task = self.session.post(raw_url, json=raw_data_list, headers=headers)
-            processed_task = self.session.post(processed_url, json=processed_data_list, headers=headers)
-
-            raw_response, processed_response = await asyncio.gather(
-                raw_task, 
-                processed_task,
-                return_exceptions=True
-            )
-
-            if isinstance(raw_response, Exception) or isinstance(processed_response, Exception):
-                logger.error(f"Error in API calls: Raw: {raw_response}, Processed: {processed_response}")
-                return False
-
-            if raw_response.status == 200:
-                raw_result = await raw_response.json()
-                logger.info(f"Successfully saved {raw_result['count']} raw entries")
-            else:
-                raw_error = await raw_response.text()
-                logger.error(f"Failed to send raw data: {raw_response.status}, error: {raw_error}")
-                return False
-
-            if processed_response.status == 200:
-                processed_result = await processed_response.json()
-                logger.info(f"Successfully saved {processed_result['count']} processed entries")
-            else:
-                processed_error = await processed_response.text()
-                logger.error(f"Failed to send processed data: {processed_response.status}, error: {processed_error}")
-                return False
-
-            return True
+            async with self.session.post(
+                f"{self.api_url}/api/weather/bulk",
+                json={
+                    "raw_data_list": raw_data_list,
+                    "processed_data_list": processed_data_list
+                },
+                headers=headers
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    logger.info(f"Successfully saved {result['count']} entries")
+                    return True
+                else:
+                    error = await response.text()
+                    logger.error(f"Failed to send bulk data: {response.status}, error: {error}")
+                    return False
 
         except Exception as e:
             logger.error(f"Error sending bulk data to API: {e}")
@@ -373,12 +366,7 @@ class DataIngestion:
             logger.error(f"Error stopping service: {e}")
 
 async def main():
-    api_url = os.getenv('DB_API_URL')
-    if not api_url:
-        logger.error("DB_API_URL not set in environment variables")
-        return
-    
-    service = DataIngestion(api_url)
+    service = DataIngestion()
     await service.start()
 
 if __name__ == "__main__":

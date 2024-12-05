@@ -8,6 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import aiofiles
 import sys
+from filelock import FileLock
 
 sys.path.append(".")
 from src.logger import logger
@@ -51,8 +52,8 @@ class WeatherCrawler:
         """Initialize timestamp file if it doesn't exist"""
         if not os.path.exists(self.timestamp_file):
             with open(self.timestamp_file, 'w') as f:
-                # Set initial timestamp to 2022-12-31 17:00:00
-                initial_date = datetime(2022, 12, 31, 17, 0, 0, tzinfo=timezone.utc)
+                # Set initial timestamp to 2020-12-31 17:00:00
+                initial_date = datetime(2020, 12, 31, 17, 0, 0, tzinfo=timezone.utc)
                 initial_timestamp = int(initial_date.timestamp())
                 json.dump({"last_timestamp": initial_timestamp}, f)
                 logger.info(f"Initialized timestamp file with date: {initial_date.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -78,50 +79,53 @@ class WeatherCrawler:
     async def save_weather_data(self, data):
         """Save raw weather data to JSON file"""
         backup_file = None
+        lock = FileLock(f"{self.data_file}.lock")
+        
         try:
-            # Load existing data
-            weather_data = await self.load_weather_data()
-            
-            # Check duplicate before saving
-            new_timestamp = data['data'][0]['dt']
-            exists = any(
-                entry.get('data', [{}])[0].get('dt') == new_timestamp 
-                for entry in weather_data
-            )
-            
-            if exists:
-                logger.info(f"Data for timestamp {new_timestamp} already exists, skipping save...")
+            with lock:
+                # Load existing data
+                weather_data = await self.load_weather_data()
+                
+                # Check duplicate before saving
+                new_timestamp = data['data'][0]['dt']
+                exists = any(
+                    entry.get('data', [{}])[0].get('dt') == new_timestamp 
+                    for entry in weather_data
+                )
+                
+                if exists:
+                    logger.info(f"Data for timestamp {new_timestamp} already exists, skipping save...")
+                    return True
+                
+                # Create backup before saving new data
+                if os.path.exists(self.data_file):
+                    backup_file = f"{self.data_file}.bak"
+                    async with aiofiles.open(self.data_file, 'r') as src, \
+                              aiofiles.open(backup_file, 'w') as dst:
+                        content = await src.read()
+                        await dst.write(content)
+                
+                # Add new data and sort by timestamp
+                weather_data.append(data)
+                weather_data.sort(key=lambda x: x['data'][0]['dt'])
+                
+                # Save to file
+                async with aiofiles.open(self.data_file, 'w') as file:
+                    await file.write(json.dumps(weather_data, indent=4))
+                
+                # Remove backup if save successful    
+                if backup_file and os.path.exists(backup_file):
+                    os.remove(backup_file)
+                
+                logger.info(f"Successfully saved new data. Total records: {len(weather_data)}")
                 return True
-            
-            # Create backup before saving new data
-            if os.path.exists(self.data_file):
-                backup_file = f"{self.data_file}.bak"
-                async with aiofiles.open(self.data_file, 'r') as src, \
-                          aiofiles.open(backup_file, 'w') as dst:
-                    content = await src.read()
-                    await dst.write(content)
-            
-            # Add new data and sort by timestamp
-            weather_data.append(data)
-            weather_data.sort(key=lambda x: x['data'][0]['dt'])
-            
-            # Save to file
-            async with aiofiles.open(self.data_file, 'w') as file:
-                await file.write(json.dumps(weather_data, indent=4))
-            
-            # Remove backup if save successful    
-            if os.path.exists(backup_file):
-                os.remove(backup_file)
-            
-            logger.info(f"Successfully saved new data. Total records: {len(weather_data)}")
-            return True
-            
+                
         except Exception as e:
             logger.error(f"Error saving weather data: {e}")
-            # Restore from backup if available
-            if os.path.exists(backup_file):
+            # Restore from backup if save failed
+            if backup_file and os.path.exists(backup_file):
                 os.replace(backup_file, self.data_file)
-                logger.info("Restored data from backup")
+                logger.info("Restored from backup file")
             return False
 
     async def init_session(self):
@@ -136,7 +140,15 @@ class WeatherCrawler:
             self.session = None
             
     @staticmethod
-    def round_down_current_time():
+    def get_historical_timestamp():
+        """Get timestamp for historical data (previous hour)"""
+        now = datetime.now()
+        previous_hour = now - timedelta(hours=1)
+        return int(previous_hour.replace(minute=0, second=0, microsecond=0).timestamp())
+
+    @staticmethod
+    def get_current_timestamp():
+        """Get timestamp for current hour"""
         now = datetime.now()
         return int(now.replace(minute=0, second=0, microsecond=0).timestamp())
 
@@ -206,7 +218,7 @@ class WeatherCrawler:
     async def crawl_historical_data(self):
         """Crawl historical weather data until the current time"""
         last_timestamp = await self.load_last_timestamp()
-        current_timestamp = self.round_down_current_time()
+        current_timestamp = self.get_historical_timestamp()
 
         logger.info("Starting to crawl historical weather data...")
 
@@ -239,15 +251,72 @@ class WeatherCrawler:
             last_timestamp += 3600  # Tăng timestamp sau khi fetch
             await self.handle_rate_limits()
 
-        logger.info("Finished crawling historical data. Starting scheduled tasks...")
-        self.start_scheduler()
+        logger.info("Finished crawling historical data.")
+
+    @staticmethod
+    def get_current_hour_timestamp():
+        now = datetime.now()
+        return int(now.replace(minute=0, second=0, microsecond=0).timestamp())
+
+    @staticmethod
+    def get_previous_hour_timestamp():
+        now = datetime.now()
+        previous_hour = now - timedelta(hours=1)
+        return int(previous_hour.replace(minute=0, second=0, microsecond=0).timestamp())
+
+    async def crawl_current_hour(self):
+        current_timestamp = self.get_current_hour_timestamp()
+        
+        # Kiểm tra dữ liệu đã tồn tại chưa
+        weather_data = await self.load_weather_data()
+        exists = any(
+            entry.get('data', [{}])[0].get('dt') == current_timestamp 
+            for entry in weather_data
+        )
+        
+        if exists:
+            logger.info(f"Data for timestamp {current_timestamp} already exists, skipping crawl...")
+            return
+        
+        logger.info(f"Crawling data for current hour: {current_timestamp}")
+        await self.fetch_weather_data(current_timestamp)
+
+    async def start(self):
+        """Main function to start crawling and scheduling"""
+        try:
+            await self.crawl_historical_data()  # Crawl historical data first
+            
+            now = datetime.now()
+            if now.minute < 5:
+                # Nếu chưa đến phút thứ 5, cào dữ liệu của giờ trước
+                previous_timestamp = self.get_previous_hour_timestamp()
+                await self.fetch_weather_data(previous_timestamp)
+            elif now.minute > 5:
+                # Nếu đã qua phút thứ 5, cào dữ liệu của giờ hiện tại
+                await self.crawl_current_hour()
+            # Nếu đúng phút thứ 5, không cần làm gì vì hourly_job sẽ chạy
+
+            self.start_scheduler()
+            
+            # Giữ chương trình chạy
+            while True:
+                await asyncio.sleep(3600)  # Đợi 1 giờ
+                
+        except asyncio.CancelledError:
+            logger.info("Crawler is shutting down...")
+        except Exception as e:
+            logger.error(f"Error while running crawler: {e}")
+        finally:
+            await self.close_session()
+            if self.scheduler.running:
+                self.scheduler.shutdown()
 
     async def hourly_job(self):
         """Job to fetch current weather data every hour"""
         try:
-            current_timestamp = self.round_down_current_time()
-            logger.info(f"Fetching weather data for current timestamp: {current_timestamp}")
+            current_timestamp = self.get_current_hour_timestamp()
             
+            logger.info(f"Fetching weather data for current timestamp: {current_timestamp}")
             data = await self.fetch_weather_data(current_timestamp)
             if data:
                 await self.save_last_timestamp(current_timestamp)
@@ -267,28 +336,26 @@ class WeatherCrawler:
 
     def start_scheduler(self):
         """Start the scheduler for hourly jobs"""
+        # Xóa tất cả các job cũ nếu có
+        self.scheduler.remove_all_jobs()
+        
+        # Thêm job mới
         self.scheduler.add_job(
             self.hourly_job,
-            CronTrigger(minute='0'),  # Run at the start of every hour
+            CronTrigger(minute='5'),   # Run at minute 5 of every hour
             id='weather_crawler_hourly'
         )
+        logger.info("Added hourly job to scheduler")
+
         self.scheduler.add_job(
             self.reset_daily_counter,
             CronTrigger(hour='0', minute='0'),  # Run at midnight
             id='reset_daily_counter'
         )
+        logger.info("Added daily counter reset job to scheduler")
 
         logger.info("Starting the scheduler...")
         self.scheduler.start()
-
-    async def start(self):
-        """Main function to start crawling and scheduling"""
-        try:
-            await self.crawl_historical_data()  # Crawl historical data first
-        except Exception as e:
-            logger.error(f"Error while crawling historical data: {e}")
-        finally:
-            await self.close_session()
 
     async def load_last_timestamp(self):
         """Load the last processed timestamp"""
@@ -310,7 +377,14 @@ class WeatherCrawler:
 
 async def main():
     crawler = WeatherCrawler()
-    await crawler.start()
+    try:
+        await crawler.start()
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt. Shutting down...")
+    finally:
+        await crawler.close_session()
+        if crawler.scheduler.running:
+            crawler.scheduler.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())
