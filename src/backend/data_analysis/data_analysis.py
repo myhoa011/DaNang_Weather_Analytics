@@ -271,8 +271,8 @@ class WeatherAnalysis:
                     error = await response.text()
                     raise Exception(f"API error: {response.status}, {error}")
         except Exception as e:
-            logger.error(f"Error fetching data: {e}")
-            raise
+            logger.error(f"Error fetching seasonal data: {e}")
+            return pd.DataFrame()
     
     async def clear_seasonal_data(self):
         try:
@@ -302,6 +302,9 @@ class WeatherAnalysis:
         try:
             # Lấy dữ liệu thời tiết
             df = await self.get_weather_data()
+            if df.empty:
+                logger.warning("No data available for seasonal analysis")
+                return
             
             # Chuyển timestamp sang định dạng datetime string
             df['dt'] = df['dt'].apply(lambda x: datetime.utcfromtimestamp(int(x)).strftime('%Y-%m-%d %H:%M:%S'))
@@ -312,101 +315,28 @@ class WeatherAnalysis:
             # Chuyển đổi đơn vị tầm nhìn từ m sang km
             df['visibility'] = df['visibility'].apply(lambda f: f/1000)
 
+            # Tạo DataFrame chính với cột dt
+            seasonal_df = pd.DataFrame({'dt': df['dt']})
 
+            # Phân tích từng feature và thêm vào DataFrame chính
+            features = ['temp', 'pressure', 'humidity', 'clouds', 'visibility', 'wind_speed', 'wind_deg']
+            
+            for feature in features:
+                result = seasonal_decompose(df[feature], model='additive', period=720)
+                # Thêm kết quả phân tích vào DataFrame chính với tên cột riêng biệt
+                seasonal_df[f'observed_{feature}'] = result.observed
+                seasonal_df[f'trend_{feature}'] = result.trend
+                seasonal_df[f'seasonal_{feature}'] = result.seasonal
+                seasonal_df[f'residual_{feature}'] = result.resid
 
-            ##bắt đầu xử lý
-            #temp
-            # Phân tích Seasonal Decomposition
-            result_temp = seasonal_decompose(df['temp'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
-            
-            # Tạo DataFrame từ các thành phần của result
-            temp_df = pd.DataFrame({
-                'dt': df['dt'], 
-                'observed_temp': result_temp.observed,
-                'trend_temp': result_temp.trend,
-                'seasonal_temp': result_temp.seasonal,
-                'residual_temp': result_temp.resid
-            })
-            
-            #pressure
-            result_pressure = seasonal_decompose(df['pressure'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
-            # Tạo DataFrame từ các thành phần của result
-            pressure_df = pd.DataFrame({
-                'dt': df['dt'], 
-                'observed_pressure': result_pressure.observed,
-                'trend_pressure': result_pressure.trend,
-                'seasonal_pressure': result_pressure.seasonal,
-                'residual_pressure': result_pressure.resid
-            })
-            
-            #humidity
-            result_humidity = seasonal_decompose(df['humidity'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
-            # Tạo DataFrame từ các thành phần của result
-            humidity_df = pd.DataFrame({
-                'dt': df['dt'], 
-                'observed_humidity': result_humidity.observed,
-                'trend_humidity': result_humidity.trend,
-                'seasonal_humidity': result_humidity.seasonal,
-                'residual_humidity': result_humidity.resid
-            })
-            
-            #clouds
-            result_clouds = seasonal_decompose(df['clouds'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
-            # Tạo DataFrame từ các thành phần của result
-            clouds_df = pd.DataFrame({
-                'dt': df['dt'], 
-                'observed_clouds': result_clouds.observed,
-                'trend_clouds': result_clouds.trend,
-                'seasonal_clouds': result_clouds.seasonal,
-                'residual_clouds': result_clouds.resid
-            })
-
-            #visibility
-            result_visibility = seasonal_decompose(df['visibility'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
-            # Tạo DataFrame từ các thành phần của result
-            visibility_df = pd.DataFrame({
-                'dt': df['dt'], 
-                'observed_visibility': result_visibility.observed,
-                'trend_visibility': result_visibility.trend,
-                'seasonal_visibility': result_visibility.seasonal,
-                'residual_visibility': result_visibility.resid
-            })
-
-            #wind_speed
-            result_wind_speed = seasonal_decompose(df['wind_speed'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
-            # Tạo DataFrame từ các thành phần của result
-            wind_speed_df = pd.DataFrame({
-                'dt': df['dt'], 
-                'observed_wind_speed': result_wind_speed.observed,
-                'trend_wind_speed': result_wind_speed.trend,
-                'seasonal_wind_speed': result_wind_speed.seasonal,
-                'residual_wind_speed': result_wind_speed.resid
-            })
-
-            #wind_deg
-            result_wind_deg = seasonal_decompose(df['wind_deg'], model='additive', period=720)  # period có thể điều chỉnh phù hợp
-            
-            # Tạo DataFrame từ các thành phần của result
-            wind_deg_df = pd.DataFrame({
-                'dt': df['dt'], 
-                'observed_wind_deg': result_wind_deg.observed,
-                'trend_wind_deg': result_wind_deg.trend,
-                'seasonal_wind_deg': result_wind_deg.seasonal,
-                'residual_wind_deg': result_wind_deg.resid
-            })
-            
-            #gộp dataFrame lại thành seasonal_df
-            # Gộp hai DataFrame theo cột (axis=1)
-            seasonal_df = pd.concat([temp_df, pressure_df, humidity_df, clouds_df, visibility_df, wind_speed_df, wind_deg_df], axis=1)
-            
+            # Xóa các dòng có giá trị NaN
             seasonal_df = seasonal_df.dropna()
 
-            
-            # Chuyển DataFrame thành danh sách dict để gửi API
+            # Chuyển đổi thành dạng records để gửi API
             seasonal_data = seasonal_df.to_dict('records')
-            
+
+            # Xóa dữ liệu cũ nếu có
             data_seasonal_old = await self.get_seasonal_data()
-            
             if not data_seasonal_old.empty:
                 await self.clear_seasonal_data()
 
@@ -431,7 +361,7 @@ class WeatherAnalysis:
                     error = await response.text()
                     raise Exception(f"API error: {response.status}, {error}")
         except Exception as e:
-            logger.exception(f"error calculating seasonal decomposition: {e}")
+            logger.error(f"Error calculating seasonal decomposition: {e}")
             raise
 
     async def start_redis_listener(self):

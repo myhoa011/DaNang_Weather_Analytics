@@ -18,7 +18,8 @@ RUN pip install --no-cache-dir \
     yacs==0.1.8 \
     fastapi==0.115.5 \
     uvicorn==0.32.1 \
-    matplotlib==3.9.2
+    matplotlib==3.9.2 \
+    redis==5.2.0
 
 # Copy shared modules
 COPY logger.py /app/src/
@@ -33,4 +34,4 @@ RUN mkdir -p logs configs
 ENV PYTHONPATH=/app
 
 # Run cluster_service.py instead of data_clustering.py
-CMD ["python", "-m", "src.data_clustering.data_clustering"]
+CMD ["uvicorn", "src.data_clustering.data_clustering:app", "--host", "0.0.0.0", "--port", "8004"]

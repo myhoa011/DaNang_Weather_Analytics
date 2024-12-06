@@ -29,8 +29,10 @@ class WeatherCluster:
         self.features = ["temp", "pressure", "humidity", "clouds", "visibility", "wind_speed", "wind_deg"]
 
     async def connect(self):
-        if self.session is None or getattr(self.session, 'closed', True):
+        """Initialize HTTP session if not exists or closed"""
+        if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
+            logger.info("Created new HTTP session")
 
     async def close(self):
         if self.session is not None and not self.session.closed:
@@ -49,7 +51,7 @@ class WeatherCluster:
                     data = await response.json()
                     if not data:
                         logger.warning("No weather data retrieved.")
-                        raise Exception("No content retrieved from API.")
+                        raise HTTPException(status_code=204, detail="No content retrieved from API.")
                     df = pd.DataFrame(data)
                     logger.info(f"Retrieved {len(df)} weather records.")
                     return df
@@ -59,8 +61,6 @@ class WeatherCluster:
         except Exception as e:
             logger.error(f"Error fetching data: {e}")
             raise
-        finally:
-            await self.close()
 
     async def process_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -187,40 +187,53 @@ class WeatherCluster:
             logger.error(f"Error plotting temperature: {e}")
 
     async def save_centroids(self, centroids: List[Dict[str, Any]]) -> bool:
-        """
-        Lưu centroids vào cơ sở dữ liệu.
+        """Save centroids to database"""
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                if self.session is None or self.session.closed:
+                    await self.connect()
+                
+                # Xóa dữ liệu cũ
+                delete_url = f"{self.db_api_url}/api/centroids"
+                headers = {"Content-Type": "application/json"}
+                
+                async with self.session.delete(delete_url, headers=headers) as response:
+                    if response.status != 200:
+                        logger.error(f"Failed to delete old centroids: {response.status}")
+                        return False
+                    logger.info("Old centroids deleted successfully")
 
-        Args:
-            centroids (List[Dict[str, Any]]): Centroids đã serialize.
+                # Lưu dữ liệu mới
+                insert_url = f"{self.db_api_url}/api/centroids"
+                async with self.session.post(insert_url, json=centroids, headers=headers) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        logger.info(f"Saved {len(centroids)} centroids successfully")
+                        return True
+                    else:
+                        error = await response.text()
+                        logger.error(f"Failed to save centroids: {error}")
+                        return False
 
-        Returns:
-            bool: Trạng thái thành công hay thất bại.
-        """
-        try:
-            await self.connect()
-
-            delete_url = f"{self.db_api_url}/api/centroids"
-            insert_url = f"{self.db_api_url}/api/centroids"
-            headers = {"Content-Type": "application/json"}
-
-            async with self.session.delete(delete_url, headers=headers) as delete_response:
-                if delete_response.status != 200:
-                    logger.warning(f"Failed to delete old centroids: {delete_response.status}")
-                    return False
-
-            async with self.session.post(insert_url, json=centroids, headers=headers) as insert_response:
-                if insert_response.status == 200:
-                    logger.info("Centroids saved successfully.")
-                    return True
-                else:
-                    error = await insert_response.text()
-                    logger.error(f"Failed to save centroids: {error}")
-                    return False
-        except Exception as e:
-            logger.error(f"Error saving centroids: {e}")
-            return False
-        finally:
-            await self.close()
+            except (aiohttp.ClientError, aiohttp.ServerDisconnectedError) as e:
+                retry_count += 1
+                logger.warning(f"Connection error (attempt {retry_count}/{max_retries}): {e}")
+                if self.session and not self.session.closed:
+                    await self.session.close()
+                self.session = None
+                if retry_count < max_retries:
+                    await asyncio.sleep(1)  # Đợi 1 giây trước khi thử lại
+                continue
+                
+            except Exception as e:
+                logger.error(f"Error saving centroids: {e}")
+                return False
+                
+        logger.error("Failed to save centroids after maximum retries")
+        return False
 
     async def save_data_cluster(self, cluster_data: List[Dict[str, Any]]) -> bool:
         """
@@ -273,8 +286,6 @@ class WeatherCluster:
         except Exception as e:
             logger.error(f"Error saving cluster data: {e}")
             return False
-        finally:
-            await self.close()
 
     @staticmethod
     def serialize_cluster_data(cluster_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

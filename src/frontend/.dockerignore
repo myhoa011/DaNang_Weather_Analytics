@@ -1,0 +1,29 @@
+# Ignore node_modules directory since it will be installed inside the Docker container
+node_modules
+
+# Ignore build artifacts (if you use a build tool like Webpack, you can adjust accordingly)
+dist/
+build/
+
+# Ignore configuration files specific to your IDE/editor
+.vscode/
+.idea/
+*.sublime*
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
+
+# Ignore log and temporary files
+*.log
+*.tmp
+
+# Ignore all hidden files and folders except for .env
+.*
+
+# Ignore the .env.example file if not needed in the container
+.env.example
+
+# Ignore documentation files
+README.md
+*.md

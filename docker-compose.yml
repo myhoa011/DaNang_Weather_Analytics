@@ -30,13 +30,15 @@ services:
       - mysql_data:/var/lib/mysql
       - ./src/mysql/init_db:/docker-entrypoint-initdb.d
       - ./src/mysql/config/mysql.cnf:/etc/mysql/conf.d/mysql.cnf
+    command: >
+      bash -c "chmod 644 /etc/mysql/conf.d/mysql.cnf && docker-entrypoint.sh mysqld"
     networks:
       - data_mining_network
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD}"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
       start_period: 30s
   db_api:
     container_name: db_api_server
@@ -137,11 +139,24 @@ services:
       - ./logs:/app/logs
       - ./configs:/app/configs
     depends_on:
-      - db_api
+      db_api:
+        condition: service_healthy
     networks:
       - data_mining_network
     env_file:
       - ./.env
+# frontend
+  frontend:
+    container_name: frontend_server
+    restart: always
+    build: /src/frontend
+    ports:
+      - "3000:80"
+    networks:
+      - data_mining_network
+    depends_on:
+      db_api:
+        condition: service_healthy
 networks:
   data_mining_network:
     driver: bridge

@@ -984,6 +984,42 @@ async def delete_all_cluster_data() -> Dict[str, Any]:
         logger.error(f"Error deleting all centroids: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/centroids")
+async def save_centroid(data_centroids: List[Centroid]) -> Dict[str, Any]:
+    try:
+        # Kết nối đến cơ sở dữ liệu
+        async with weather_api.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                # Truncate bảng trước khi chèn mới
+                await cur.execute("TRUNCATE TABLE centroids")
+                logger.info("Cleared old centroids data.")
+
+                # Câu lệnh chèn dữ liệu
+                query = """
+                INSERT INTO centroids 
+                (cluster_name, temp, scaled_temp) 
+                VALUES (%s, %s, %s)
+                """
+                # Tạo danh sách giá trị từ dữ liệu đầu vào
+                values = [
+                    (data.cluster_name, data.temp, data.scaled_temp)
+                    for data in data_centroids
+                ]
+
+                # Thực thi lệnh chèn dữ liệu hàng loạt
+                await cur.executemany(query, values)
+
+        # Trả về kết quả thành công
+        return {
+            "count": len(data_centroids),
+            "message": "Centroids saved successfully"
+        }
+
+    except Exception as e:
+        # Ghi log và trả về lỗi nếu xảy ra
+        logger.error(f"Error saving centroids data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/data_cluster", response_model=List[ClusterData])
 async def get_all_weather():
     try:

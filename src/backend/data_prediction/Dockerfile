@@ -18,7 +18,9 @@ RUN pip install --no-cache-dir \
     lightgbm==4.5.0 \
     loguru==0.7.2 \
     yacs==0.1.8 \
-    redis==5.2.0
+    redis==5.2.0 \
+    fastapi==0.115.5 \
+    uvicorn==0.32.1 
 
 # Copy shared modules
 COPY logger.py /app/src/

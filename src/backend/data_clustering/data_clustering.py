@@ -1,26 +1,166 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
-from contextlib import AsyncExitStack
 from sklearn.cluster import KMeans
-from src.backend.data_clustering.cluster_service import WeatherCluster
-from src.backend.data_clustering.predict import Predict
+from .cluster_service import WeatherCluster
+from .predict import Predict
 from src.logger import logger
 from contextlib import asynccontextmanager, suppress
-from src.backend.data_clustering.weather_model import WeatherData
+from .weather_model import WeatherData
 from typing import Dict, Any
-import pandas as pd
-from .controid import Centroid, CentroidsResponse
+import redis.asyncio as aioredis
+import json
+import os
+from dotenv import load_dotenv
+from datetime import datetime
+from .spider import SpiderProcessor
+
+# Load environment variables
+load_dotenv()
+
+# Initialize Redis connection
+redis = None
+
+async def init_redis():
+    """Initialize Redis connection"""
+    global redis
+    if redis is None:
+        redis = await aioredis.from_url(
+            f'redis://redis:6379',
+            password=os.getenv('REDIS_PASSWORD')
+        )
+    return redis
+
+async def wait_for_initial_data():
+    """Wait for initial data to be loaded in db"""
+    redis_client = await init_redis()
+    logger.info("Waiting for initial data load...")
+    while True:
+        try:
+            is_ready = await redis_client.get('db_initial_load_complete')
+            if is_ready:
+                logger.info("Initial data is ready")
+                return True
+                
+            # Subscribe để nhận thông báo realtime
+            pubsub = redis_client.pubsub()
+            await pubsub.subscribe('db_status')
+            
+            async for message in pubsub.listen():
+                if message['type'] == 'message':
+                    if message['data'] == b'initial_load_complete':
+                        logger.info("Received initial data ready signal")
+                        await pubsub.unsubscribe('db_status')
+                        return True
+            
+            await asyncio.sleep(5)
+        except Exception as e:
+            logger.error(f"Error waiting for initial data: {e}")
+            await asyncio.sleep(5)
+
+async def start_redis_listener():
+    """Start listening for new weather data and perform clustering"""
+    redis_client = await init_redis()
+    try:
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe('weather_data')
+        
+        logger.info("Started Redis listener for new weather data")
+        
+        # Lấy dữ liệu ban đầu và thực hiện clustering
+        weather_data = await cluster.get_weather_data()
+        if not weather_data.empty:
+            # Process and cluster initial data
+            processed_data = await cluster.process_data(weather_data)
+            clustered_data, centroids = cluster.cluster_data(processed_data)
+            customized_data = cluster.customize_labels(clustered_data)
+            
+            # Save initial centroids
+            centroids_serialized = cluster.serialize_centroids(centroids.to_dict("records"))
+            centroid_success = await cluster.save_centroids(centroids_serialized)
+            if centroid_success:
+                logger.info("Lưu centroids ban đầu thành công")
+            
+            # Save initial cluster data
+            cluster_data_serialized = cluster.serialize_cluster_data(customized_data.to_dict("records"))
+            cluster_success = await cluster.save_data_cluster(cluster_data_serialized)
+            if cluster_success:
+                logger.info("Lưu dữ liệu cluster ban đầu thành công")
+
+            # Process and save initial spider data
+            await spider.get_weather_data()
+            await spider.process_data()
+            await spider.save_spider_data()
+            logger.info("Lưu dữ liệu spider ban đầu thành công")
+        
+        # Bắt đầu lắng nghe dữ liệu mới
+        while True:
+            message = await pubsub.get_message(ignore_subscribe_messages=True)
+            if message:
+                try:
+                    # Parse new data
+                    data = json.loads(message['data'])
+                    current_time = datetime.fromtimestamp(data['dt'])
+                    logger.info(f"Received new weather data at {current_time}")
+                    
+                    # Get latest data including new record
+                    weather_data = await cluster.get_weather_data()
+                    if not weather_data.empty:
+                        # Process and cluster new data
+                        processed_data = await cluster.process_data(weather_data)
+                        clustered_data, centroids = cluster.cluster_data(processed_data)
+                        customized_data = cluster.customize_labels(clustered_data)
+                        
+                        # Save new centroids
+                        centroids_serialized = cluster.serialize_centroids(centroids.to_dict("records"))
+                        centroid_success = await cluster.save_centroids(centroids_serialized)
+                        if centroid_success:
+                            logger.info("New centroids saved successfully")
+                        
+                        # Save new cluster data
+                        cluster_data_serialized = cluster.serialize_cluster_data(customized_data.to_dict("records"))
+                        cluster_success = await cluster.save_data_cluster(cluster_data_serialized)
+                        if cluster_success:
+                            logger.info("New cluster data saved successfully")
+
+                        # Update spider data
+                        await spider.get_weather_data()
+                        await spider.process_data()
+                        await spider.save_spider_data()
+                        logger.info("Cập nhật dữ liệu spider thành công")
+                        
+                        logger.info("Completed clustering with new data")
+                    else:
+                        logger.warning("No data available for clustering")
+                        
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error decoding message: {e}")
+                except Exception as e:
+                    logger.error(f"Error processing new data: {e}")
+            
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        logger.error(f"Error in Redis listener: {e}")
+        # Attempt to reconnect
+        await asyncio.sleep(5)
+        await start_redis_listener()
 
 # Initialize global objects
 cluster = WeatherCluster()
 predict = Predict()
-
+spider = SpiderProcessor()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     tasks = []
     try:
+        # Initialize Redis
+        await init_redis()
+        
+        # Wait for initial data
+        await wait_for_initial_data()
+        
         # Startup: Initialize WeatherCluster and Predictor
         logger.info("Initializing WeatherCluster and Predictor...")
         await cluster.connect()
@@ -61,13 +201,13 @@ async def lifespan(app: FastAPI):
                     # Đợi trước khi khởi động lại vòng lặp
                     await asyncio.sleep(60)
 
-
         # Start background tasks
         training_task = asyncio.create_task(periodic_training())
         prediction_task = asyncio.create_task(periodic_prediction())
-        tasks.extend([training_task, prediction_task])
+        redis_listener_task = asyncio.create_task(start_redis_listener())
+        tasks.extend([training_task, prediction_task, redis_listener_task])
 
-        yield  # Yield control back to FastAPI
+        yield
 
     finally:
         # Cancel background tasks
@@ -78,6 +218,10 @@ async def lifespan(app: FastAPI):
                 await task
         logger.info("Background tasks have been shut down.")
 
+        # Close Redis connection
+        if redis:
+            await redis.close()
+        
         # Cleanup on shutdown
         logger.info("Shutting down WeatherCluster and cleaning up resources...")
         await cluster.close()
@@ -241,7 +385,7 @@ async def get_all_data_cluster():
         logger.error(f"Unexpected error while fetching data cluster: {e}")
         raise HTTPException(status_code=500, detail="Error fetching data cluster.")
 
-@app.get("/api/centroids", response_model=CentroidsResponse)
+@app.get("/api/centroids")
 async def get_centroids():
     """
     API để lấy thông tin các centroids của cụm.
@@ -292,12 +436,3 @@ async def predict_probability_season(temp: float):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal server error.")
-    
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "src.backend.data_clustering.data_clustering:app",
-        host="localhost",
-        port=8004,
-        reload=True
-    )

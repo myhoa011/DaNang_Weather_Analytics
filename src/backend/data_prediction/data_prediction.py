@@ -13,6 +13,8 @@ from sklearn.preprocessing import StandardScaler
 from src.logger import logger
 import redis.asyncio as aioredis
 import json
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 # Load environment variables
 load_dotenv()
@@ -319,12 +321,22 @@ class WeatherPredictor:
             if historical_data.empty:
                 logger.warning("No historical data available after initial load signal")
                 return
-            
+                
+            historical_data = historical_data.sort_values(by='dt', ascending=True)
             logger.info(f"Collected {len(historical_data)} historical records")
             
             # Train model with historical data
             await self.train_model(historical_data)
             logger.info("Initial model training completed")
+            
+            # Get latest data point for initial prediction
+            latest_data = historical_data.iloc[-1:].to_dict('records')
+            
+            # Make initial predictions
+            initial_predictions = await self.predict(latest_data)
+            if initial_predictions:
+                await self.save_predictions(initial_predictions)
+                logger.info("Initial predictions generated and saved")
             
             # Start Redis listener to receive new data
             await self.start_redis_listener()
@@ -344,3 +356,91 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+app = FastAPI()
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+predictor = None
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background prediction tasks"""
+    global predictor
+    predictor = WeatherPredictor()
+    # Start background tasks in a separate task
+    asyncio.create_task(predictor.run())
+
+@app.get("/run")
+async def run_prediction():
+    """API endpoint to manually trigger prediction"""
+    try:
+        # Collect historical data
+        historical_data = await predictor.get_weather_data()
+        if historical_data.empty:
+            raise HTTPException(status_code=400, detail="No historical data available")
+        
+        # Sort historical data
+        historical_data = historical_data.sort_values(by='dt', ascending=True)
+        logger.info(f"Collected and sorted {len(historical_data)} historical records")
+        
+        # Get latest data for prediction
+        latest_data = historical_data.iloc[-1:].to_dict('records')
+        
+        # Make predictions
+        predictions = await predictor.predict(latest_data)
+        if not predictions:
+            raise HTTPException(status_code=400, detail="Failed to generate predictions")
+
+        # Sort predictions
+        sorted_predictions = sorted(predictions, key=lambda x: x['dt'])
+        
+        # Save to database
+        try:
+            # Kiểm tra và tạo session nếu cần
+            if predictor.session is None or predictor.session.closed:
+                await predictor.connect()
+
+            headers = {"Content-Type": "application/json"}
+            async with predictor.session.post(
+                f"{predictor.base_url}/api/weather/predictions",
+                json=sorted_predictions,
+                headers=headers
+            ) as response:
+                if response.status == 200:
+                    logger.info("Predictions saved to database successfully")
+                else:
+                    error = await response.text()
+                    logger.error(f"Failed to save predictions: {error}")
+                    raise HTTPException(status_code=500, detail="Failed to save predictions")
+
+        except Exception as db_error:
+            logger.error(f"Database error: {db_error}")
+            raise HTTPException(status_code=500, detail="Failed to save predictions")
+
+        return {
+            "status": "success", 
+            "message": "Predictions generated and saved successfully",
+            "data": sorted_predictions
+        }
+            
+    except Exception as e:
+        logger.error(f"Error in manual prediction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def start_background_tasks():
+    """Start background prediction tasks"""
+    global predictor
+    predictor = WeatherPredictor()
+    await predictor.run()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)

@@ -340,7 +340,7 @@ class DataIngestion:
             self.scheduler.add_job(
                 self.ingest,
                 'interval',
-                minutes=1,
+                minutes=30,
                 id='weather_data_ingestion'
             )
             

@@ -1,10 +1,12 @@
 import asyncio
+import aiohttp
 import logging
+import os
 import pandas as pd
 import numpy as np
 import time
 from typing import Dict, Any
-from src.backend.data_clustering.cluster_service import WeatherCluster
+from .cluster_service import WeatherCluster
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
@@ -17,6 +19,7 @@ class Predict:
         """
         Initialize Predict class with RandomForest models and other utilities for weather data predictions.
         """
+        self.db_api_url = os.getenv("DB_API_URL")
         self.is_trained_temp = False
         self.is_trained_season = False
         self.last_trained_temp = None
@@ -26,6 +29,13 @@ class Predict:
         self.temperature_model = RandomForestRegressor(n_estimators=100, random_state=42)
         self.season_model = RandomForestClassifier(n_estimators=100, random_state=42)
         self.features = ["temp", "pressure", "humidity", "clouds", "visibility", "wind_speed", "wind_deg"]
+        self.session = None
+
+    async def connect(self):
+        """Initialize HTTP session if not exists or closed"""
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+            logger.info("Created new HTTP session for predictor")
 
     async def train_temperature_model(self) -> None:
         """
@@ -53,21 +63,65 @@ class Predict:
             raise
 
     async def predict_next_day_temperature(self) -> float:
-        """
-        Predict the next day's temperature using the trained model.
-        """
-        try:
-            if not self.is_trained_temp:
-                await self.train_temperature_model()
+        """Predict the next day's temperature using the trained model."""
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                if not self.is_trained_temp:
+                    await self.train_temperature_model()
 
-            df = await self.data_service.get_weather_data()
-            df = await self.data_service.process_data(df)
-            today_features = df[self.features].iloc[-1].to_frame().T
-            return self.temperature_model.predict(today_features)[0]
+                df = await self.data_service.get_weather_data()
+                if df.empty:
+                    raise Exception("No weather data available")
+                    
+                df = await self.data_service.process_data(df)
+                today_features = df[self.features].iloc[-1].to_frame().T
+                predicted_temp = self.temperature_model.predict(today_features)[0]
 
-        except Exception as e:
-            logger.error(f"Error predicting temperature: {e}")
-            raise
+                # Lấy ngày hiện tại
+                current_date = pd.to_datetime('now').strftime('%Y-%m-%d')
+                data_save = {
+                    "temp_predict": float(predicted_temp),
+                    "date": current_date
+                }
+                logger.info(f"Dữ liệu dự đoán: {data_save}")
+
+                # Kiểm tra và tạo session nếu cần
+                if self.session is None or self.session.closed:
+                    await self.connect()
+
+                # Gọi API để lưu nhiệt độ dự đoán
+                headers = {"Content-Type": "application/json"}
+                async with self.session.post(
+                    f"{self.db_api_url}/api/temp_pred_save",
+                    json=data_save,
+                    headers=headers
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"Lưu dự đoán nhiệt độ thành công: {predicted_temp}°C")
+                        return predicted_temp
+                    else:
+                        error = await response.text()
+                        logger.error(f"Lỗi khi lưu dự đoán nhiệt độ: {error}")
+
+            except (aiohttp.ClientError, aiohttp.ServerDisconnectedError) as e:
+                retry_count += 1
+                logger.warning(f"Connection error (attempt {retry_count}/{max_retries}): {e}")
+                if self.session and not self.session.closed:
+                    await self.session.close()
+                self.session = None
+                if retry_count < max_retries:
+                    await asyncio.sleep(1)
+                continue
+                
+            except Exception as e:
+                logger.error(f"Error predicting temperature: {e}")
+                raise
+
+        logger.error("Failed to predict temperature after maximum retries")
+        raise Exception("Failed to predict temperature after maximum retries")
 
     async def train_season_model(self) -> None:
         """

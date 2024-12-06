@@ -1,96 +1,161 @@
-import requests
-import pandas as pd
+import os
+import asyncio
+import json
 from datetime import datetime
-from typing import List, Dict
+import aiohttp
+import pandas as pd
+from typing import List, Dict, Any
+import redis.asyncio as aioredis
+from src.logger import logger
 
-class ClusterToSpiderProcessor:
-    def __init__(self, source_api_url: str, target_api_url: str):
-        """
-        Khởi tạo lớp ClusterToSpiderProcessor.
-
-        :param source_api_url: URL API để lấy dữ liệu nguồn (`/api/data_cluster`).
-        :param target_api_url: URL API để lưu dữ liệu (`/api/spider`).
-        """
-        self.source_api_url = source_api_url
-        self.target_api_url = target_api_url
+class SpiderProcessor:
+    def __init__(self):
+        self.session = None
+        self.db_api_url = os.getenv("DB_API_URL")
+        self.redis = None
         self.dataframe = None
         self.processed_data = None
         self.label_to_season = {0: "Spring", 1: "Winter", 2: "Summer", 3: "Autumn"}
 
-    def fetch_data(self):
-        """Gọi API nguồn để lấy dữ liệu."""
+    async def connect(self):
+        """Initialize HTTP session and Redis connection"""
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+            logger.info("Created new HTTP session")
+        
+        if self.redis is None:
+            self.redis = await aioredis.from_url('redis://redis:6379')
+            logger.info("Connected to Redis")
+
+    async def get_weather_data(self):
+        """Fetch weather data from API"""
         try:
-            response = requests.get(self.source_api_url)
-            if response.status_code != 200:
-                raise Exception(f"Failed to fetch data: {response.status_code}, {response.text}")
+            if self.session is None or self.session.closed:
+                await self.connect()
 
-            data = response.json()
-            self.dataframe = pd.DataFrame(data)
-            self.dataframe["date"] = pd.to_datetime(self.dataframe["date"])  # Chuyển đổi cột 'date' thành datetime
+            async with self.session.get(f"{self.db_api_url}/api/data_cluster") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    self.dataframe = pd.DataFrame(data)
+                    self.dataframe["date"] = pd.to_datetime(self.dataframe["date"])
+                    logger.info(f"Retrieved {len(self.dataframe)} weather records")
+                else:
+                    error = await response.text()
+                    logger.error(f"Failed to fetch data: {error}")
         except Exception as e:
-            raise Exception(f"Error fetching data: {e}")
+            logger.error(f"Error fetching data: {e}")
 
-    def process_data(self):
-        """Xử lý dữ liệu thành format phù hợp để gửi đến API `/api/spider`."""
+    async def process_data(self):
+        """Process data into spider chart format"""
         if self.dataframe is None:
-            raise ValueError("No data fetched. Call fetch_data() first.")
-
-        # Nhóm dữ liệu theo `custom_label` và `year`
-        grouped_data = (
-            self.dataframe.groupby(["custom_label", self.dataframe["date"].dt.year])
-            .size()
-            .reset_index(name="days")
-        )
-
-        # Thêm cột 'season' từ `custom_label`
-        grouped_data["season"] = grouped_data["custom_label"].map(self.label_to_season)
-
-        # Đổi tên cột `date` thành `year`
-        grouped_data = grouped_data.rename(columns={"date": "year"})
-
-        # Lưu kết quả đã xử lý
-        self.processed_data = grouped_data
-
-    def get_processed_data(self) -> List[Dict[str, any]]:
-        """
-        Trả về dữ liệu đã xử lý dưới dạng danh sách từ điển.
-
-        :return: Danh sách từ điển (season, days, year).
-        """
-        if self.processed_data is None:
-            raise ValueError("Data has not been processed. Call process_data() first.")
-
-        return [
-            {"season": row["season"], "days": int(row["days"]), "year": int(row["year"])}
-            for _, row in self.processed_data.iterrows()
-        ]
-
-    def save_to_spider_api(self):
-        """Gửi dữ liệu đã xử lý đến API `/api/spider`."""
-        if self.processed_data is None:
-            raise ValueError("Data has not been processed. Call process_data() first.")
-
-        data_to_send = self.get_processed_data()
+            logger.warning("No data fetched. Call get_weather_data() first.")
+            return
 
         try:
-            response = requests.post(self.target_api_url, json=data_to_send)
-            if response.status_code == 200:
-                print(f"Success: {response.json()}")
-            else:
-                print(f"Failed to save data: {response.text}")
+            # Nhóm dữ liệu theo season và year
+            grouped_data = (
+                self.dataframe.groupby(["custom_label", self.dataframe["date"].dt.year])
+                .size()
+                .reset_index(name="days")
+            )
+
+            # Thêm cột season từ custom_label
+            grouped_data["season"] = grouped_data["custom_label"].map(self.label_to_season)
+
+            # Đổi tên cột date thành year
+            grouped_data = grouped_data.rename(columns={"date": "year"})
+
+            self.processed_data = grouped_data
+            logger.info("Data processed successfully for spider chart")
+
         except Exception as e:
-            raise Exception(f"Error saving data to API: {e}")
+            logger.error(f"Error processing data: {e}")
 
+    async def save_spider_data(self) -> bool:
+        """Save processed data to database"""
+        if self.processed_data is None:
+            logger.warning("No processed data available")
+            return False
 
-# URL API
-source_api_url = "http://localhost:8000/api/data_cluster"
-target_api_url = "http://localhost:8000/api/spider"
+        try:
+            if self.session is None or self.session.closed:
+                await self.connect()
 
-# Sử dụng lớp ClusterToSpiderProcessor
-processor = ClusterToSpiderProcessor(source_api_url, target_api_url)
+            data_to_send = [
+                {"season": row["season"], "days": int(row["days"]), "year": int(row["year"])}
+                for _, row in self.processed_data.iterrows()
+            ]
 
-# Thực hiện các bước xử lý và lưu dữ liệu
-processor.fetch_data()         # Lấy dữ liệu từ API nguồn
-processor.process_data()       # Xử lý dữ liệu
-print(processor.get_processed_data())  # In dữ liệu đã xử lý
-processor.save_to_spider_api() # Gửi dữ liệu đã xử lý đến API đích
+            headers = {"Content-Type": "application/json"}
+            async with self.session.post(
+                f"{self.db_api_url}/api/spider", 
+                json=data_to_send,
+                headers=headers
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    logger.info(f"Successfully saved spider data: {result}")
+                    return True
+                else:
+                    error = await response.text()
+                    logger.error(f"Failed to save spider data: {error}")
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error saving spider data: {e}")
+            return False
+
+    async def start_redis_listener(self):
+        """Listen for new weather data and update spider chart"""
+        try:
+            await self.connect()
+            
+            # Xử lý dữ liệu ban đầu
+            await self.get_weather_data()
+            if self.dataframe is not None:
+                await self.process_data()
+                await self.save_spider_data()
+                logger.info("Initial spider data processed and saved")
+
+            # Bắt đầu lắng nghe Redis
+            pubsub = self.redis.pubsub()
+            await pubsub.subscribe('weather_data')
+            logger.info("Started Redis listener for spider data")
+
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True)
+                if message:
+                    try:
+                        data = json.loads(message['data'])
+                        current_time = datetime.fromtimestamp(data['dt'])
+                        logger.info(f"Received new weather data at: {current_time}")
+
+                        # Đợi một chút để đảm bảo dữ liệu đã được xử lý bởi clustering
+                        await asyncio.sleep(2)
+
+                        # Cập nhật spider chart
+                        await self.get_weather_data()
+                        await self.process_data()
+                        await self.save_spider_data()
+                        logger.info("Spider data updated successfully")
+
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Error decoding JSON: {e}")
+                    except Exception as e:
+                        logger.error(f"Error processing new data: {e}")
+
+                await asyncio.sleep(1)
+
+        except Exception as e:
+            logger.error(f"Error in Redis listener: {e}")
+            # Thử kết nối lại
+            await asyncio.sleep(5)
+            await self.start_redis_listener()
+
+# Khởi tạo và chạy spider processor
+async def main():
+    processor = SpiderProcessor()
+    await processor.start_redis_listener()
+
+if __name__ == "__main__":
+    asyncio.run(main())
